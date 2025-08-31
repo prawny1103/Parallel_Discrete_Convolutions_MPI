@@ -55,6 +55,18 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        /* 
+        Error catching for incorrect flag usage
+        
+            Examples: 
+            1. No flags provided, 
+            2. Generating array but provided only height not width, 
+            3. Not generating and provided feature but no kernel
+            4. Provided output, but generated/provided no input
+
+        */
+
+
         // (optionally) generate inputs
 
         // Extract Feature Map
@@ -78,7 +90,7 @@ void extract_feature_map(char* filepath, float** output) {
 }
 
 void extract_kernel(char* filepath, float** output){
-    
+
 }
 
 
