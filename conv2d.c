@@ -119,6 +119,33 @@ int conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, in
     return 0;
 }
 
+/*
+Writes outputs to a file.
+@param filepath The filepath of where to find/put the output file.
+@param outputs The 2d convolutions outputs. This is what is written to the file.
+@param h_dimension The height of the outputs. Should be the same as the feature map.
+@param w_dimension The width of the outputs. Should be the same as the feature map.
+*/
+int write_outputs(char* filepath, float** outputs, int h_dimension, int w_dimension){
+    if (filepath == NULL){ return 1; }
+    FILE* file_ptr = fopen(filepath, "w");
+    if (file_ptr == NULL){ return 1; }
+
+    // Empty the file, then close it.
+    fprintf(file_ptr, "");
+    fclose(file_ptr);
+
+    // Reopen file in append mode
+    FILE* file_ptr = fopen(filepath, "a");
+
+    // Append the dimensions to the file
+
+    // Append every number to the file, remember to round to 3 decimals:    fprintf("%.3f ", number);
+
+    // Close file
+
+}
+
 int main(int argc, char** argv) {
     
     // Initialising variables for future use
@@ -191,7 +218,6 @@ int main(int argc, char** argv) {
         if (status != 0){ 
             // TODO: Handle when it can't extract file dimensions
         }
-        printf("Dimensions: %dx%d\n", kH, kW);
     }
 
     // Allocating memory
@@ -199,17 +225,13 @@ int main(int argc, char** argv) {
     for (int i = 0; i < kH; i++){
         kernel[i] = (float*)malloc(kW * sizeof(float));
     }
-    printf("Kernel: \n");
+
     // Extracting data
     if (kernel_file != NULL){
         int status = extract_data(kernel_file, kW, kH, 0, 0, &kernel);
-        for(int i = 0; i < kH; i++){
-            for (int j = 0; j < kW; j++){
-                printf("%f ", kernel[i][j]);
-            }
-            printf("\n");
+        if (status != 0){
+            // TODO: Handle when can't extract kernel
         }
-        printf("\n");
     }
 
     // This is the "same padding" added to the feature map. Width = 0, Height = 1
@@ -244,18 +266,12 @@ int main(int argc, char** argv) {
             feature_map[i][j] = 0.0;
         }
     }
-    printf("\nFeature Map: \n");
+
     // Extract Feature Map
     if (feature_file != NULL){
         int status = extract_data(feature_file, W, H, padding_width, padding_height, &feature_map);
         if (status != 0){
             // TODO: Handle when it can't extract data
-        }
-        for (int i = 0; i < total_height; i++){
-            for (int j = 0; j < total_width; j++){
-                printf("%f ", feature_map[i][j]);
-            }
-            printf("\n");
         }
     }
 
@@ -269,16 +285,10 @@ int main(int argc, char** argv) {
         outputs[i] = (float*)malloc(W * sizeof(float));
     }
     
-    printf("\nOutputs: \n");
+    // Convolutions
     int status = conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, outputs);
-    if (status == 0){
-        for (int i = 0; i < H; i++){
-            for (int j = 0; j < W; j++){
-                printf("%.3f ", outputs[i][j]);
-            }
-            printf("\n");
-            
-        }
+    if (status != 0){
+        // TODO: Handle when can't perform convolutions
     }
 
     
