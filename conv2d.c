@@ -11,9 +11,15 @@ int extract_dimensions(char* filepath, int* height, int* width) {
     char firstline[16];
 
     FILE* file_ptr = fopen(filepath, "r");
+    if (file_ptr == NULL){
+        return 1;
+    }
 
     // Reads the first line
     fgets(firstline, sizeof(firstline), file_ptr);
+    if (strcmp(firstline, "") == 0){
+        return 2;
+    }
 
     char* token = strtok(firstline, " ");
     *height = atoi(token);
@@ -23,14 +29,15 @@ int extract_dimensions(char* filepath, int* height, int* width) {
     return 0;
 }
 
+
 /* 
     Reads an input file and extracts data into an output. 
-    @param filepath The filepath where the feature map is stored.
-    @param f_width  The number of elements in each line of the feature map. The width of f.
-    @param f_height The number of rows in the feature map. The height of f.
+    @param filepath The filepath where the data is stored.
+    @param f_width  The number of elements in each line. Width.
+    @param f_height The number of rows. Height.
     @param output   The stream into which the inputs will be stored.
 */
-int extract_feature_map(char* filepath, int f_width, int f_height, float** *output) {
+int extract_data(char* filepath, int f_width, int f_height, float** *output) {
     const size_t buffer_size = (FLOAT_STRING_LENGTH * f_width) + 1; // +1 for null-byte
 
     if (filepath == NULL){ return 1; }
@@ -51,11 +58,43 @@ int extract_feature_map(char* filepath, int f_width, int f_height, float** *outp
         int column_index = 0;
         while (token != NULL){
             float element = (float)atof(token);
-            (*output)[row_index-1][column_index] = element; // Add to feature_map. Need to do "-1" to avoid the first line.
+            (*output)[row_index-1][column_index] = element; // Add to output. Need to do "-1" to avoid the first line.
             token = strtok(NULL, " ");
             column_index++;
         }
         row_index++;
+    }
+    return 0;
+}
+
+// Function to perform 2D discrete convolution
+int conv2d(float** f, int H, int W, float** g, float kH, int kW, float** output){
+
+    int max_height = H - 2;
+    int max_width = W - 2;
+
+    for (int n = 1; n < max_width; n++){
+        for (int k = 1; k < max_height; k++){
+
+            // dimensions for convolution window
+            int M = kW / 2;
+            int N = kH / 2;
+            float result = 0;
+
+            // Convolution formula applied here, extra dimension (N) to make it 2d
+            for (int i = 0-M; i <= M; i++){
+                for (int j = 0-N; j <= N; j++){
+                    int row = n+i;
+                    int col = k+j;
+
+                    // Stop if we're about to check a row/column that's OOB
+                    if (0 <= row && row < W && 0 <= col && col < H){
+                        result = result + (f[row][col] * g[i+M][j+N]);
+                    }
+                }
+            }
+            output[n-1][k-1] = result;
+        }
     }
     return 0;
 }
@@ -107,6 +146,7 @@ int main(int argc, char** argv) {
             continue;
         }
     }
+    
     /* 
     TODO: Error catching for incorrect flag usage
         
@@ -120,6 +160,37 @@ int main(int argc, char** argv) {
 
 
     // TODO: (optionally) generate inputs
+
+
+
+    // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
+
+    // Extracting dimensions
+    if (kernel_file != NULL && (kH <= 0 || kW <= 0)){
+        int status = extract_dimensions(kernel_file, &kH, &kW);
+        if (status != 0){ 
+            // TODO: Handle when it can't extract file dimensions
+        }
+    }
+
+    // Allocating memory
+    float** kernel = (float**)malloc(kH * sizeof(float*));
+    for (int i = 0; i < kH; i++){
+        kernel[i] = (float*)malloc(kW * sizeof(float));
+    }
+
+    // Extracting data
+    if (kernel_file != NULL){
+        int status = extract_data(kernel_file, kW, kH, &kernel);
+        for(int i = 0; i < 5; i++){
+            //printf("%f\n", kernel[1][i]);
+        }
+    }
+
+
+
+
+    // ~~~~~~~~~~~~~~ FEATURE MAP ~~~~~~~~~~~~~~ // 
 
     // Extract dimensions of the feature map
     if (feature_file != NULL && (H <= 0 || W <= 0)){
@@ -139,16 +210,37 @@ int main(int argc, char** argv) {
 
     // Extract Feature Map
     if (feature_file != NULL){
-        int status = extract_feature_map(feature_file, W, H, &feature_map);
+        int status = extract_data(feature_file, W, H, &feature_map);
         for(int i = 0; i < 5; i++){
-            printf("%f\n", feature_map[0][i]);
+            //printf("%f\n", feature_map[0][i]);
         }
     }
 
-    // TODO: Extract Kernel
+    
 
-    // TODO: conv2d()
 
+
+    
+
+
+    return 0;
+
+    // ~~~~~~~~~~~~~~ conv2d() ~~~~~~~~~~~~~~ //
+
+    // Allocating memory
+    float** outputs = (float**)malloc(W * sizeof(float*));
+    for (int i = 0; i < H; i++){
+        outputs[i] = (float*)malloc(W * sizeof(float));
+    }
+    
+    int status = conv2d(feature_map, H, W, kernel, kH, kW, outputs);
+    if (status == 0){
+        for (int i = 0; i < 5; i++){
+            printf("%f\n", outputs[0][i]);
+        }
+    }
+
+    
     // TODO: (optionally) write to output file
 
     // ...
@@ -160,16 +252,7 @@ int main(int argc, char** argv) {
 }
 
 
-void extract_kernel(char* filepath, float** output){
 
-}
-
-
-
-// Function to perform 2D discrete convolution
-void conv2d(float** f, float** g, float** output){
-    
-}
 
 
 
@@ -197,11 +280,13 @@ kernel = [
     [0.0,0.4,0.1],
     [0.1,0.1,0.5]
     ]
+*/
 
+/*
 def conv(f,g):
-    max_height = len(f) - 2
-    max_width = len(f[0]) - 2
-    output = [[0]*max_width for _ in range(max_height)]
+    max_height = len(f) - 2                                     H - 2
+    max_width = len(f[0]) - 2                                   W - 2
+    output = [[0]*max_width for _ in range(max_height)]         output
 
     # Loop width/height to make the output array
     for n in range(1, max_width+1):

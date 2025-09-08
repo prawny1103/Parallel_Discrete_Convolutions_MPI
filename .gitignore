@@ -36,3 +36,6 @@ ipch/
 *.~
 *.bak
 *.tmp
+
+# build file
+conv2d
