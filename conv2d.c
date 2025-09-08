@@ -35,27 +35,37 @@ int extract_dimensions(char* filepath, int* height, int* width) {
     @param filepath The filepath where the data is stored.
     @param f_width  The number of elements in each line. Width.
     @param f_height The number of rows. Height.
+    @param padding_width The number of zeroes to pad the width with.
+    @param padding_height The number of zeroes to pad the height with.
     @param output   The stream into which the inputs will be stored.
 */
-int extract_data(char* filepath, int f_width, int f_height, float** *output) {
-    const size_t buffer_size = (FLOAT_STRING_LENGTH * f_width) + 1; // +1 for null-byte
-
+int extract_data(char* filepath, int f_width, int f_height, int padding_width, int padding_height, float** *output) {
+    
     if (filepath == NULL){ return 1; }
+    FILE* file_ptr = fopen(filepath, "r");
+    if (file_ptr == NULL){ return 1; }
+
+    // Create a buffer to place extracted strings into
+    const size_t buffer_size = (FLOAT_STRING_LENGTH * f_width) + 1; // +1 for null-byte
+    
     char* buffer = (char*)malloc(buffer_size);
 
-    FILE* file_ptr = fopen(filepath, "r");
-
     // Now loop over each line in the file
-    int row_index = 0;
-    while (fgets(buffer, buffer_size, file_ptr) != NULL){
-        if (row_index == 0) {
+    int row_index = 0 + padding_height;
+    while (row_index < (f_height + padding_height*2)){
+        
+        if (fgets(buffer, buffer_size, file_ptr) == NULL){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ADD SOMETHING HERE TO MAYBE ADD AN EXTRA LINE? BUT ALSO CHECK IF IT ALREADY WORKS?
+        }
+
+        if (row_index == 0 + padding_height) {
             row_index++;
             continue;
         }
         char* token = strtok(buffer, " ");
 
         // Now loop over each number in the line
-        int column_index = 0;
+        int column_index = 0 + padding_width;
         while (token != NULL){
             float element = (float)atof(token);
             (*output)[row_index-1][column_index] = element; // Add to output. Need to do "-1" to avoid the first line.
@@ -64,6 +74,7 @@ int extract_data(char* filepath, int f_width, int f_height, float** *output) {
         }
         row_index++;
     }
+    
     return 0;
 }
 
@@ -160,7 +171,7 @@ int main(int argc, char** argv) {
 
 
     // TODO: (optionally) generate inputs
-
+    // TODO: Add check to see if the user wants to generate their own feature map.
 
 
     // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
@@ -181,13 +192,15 @@ int main(int argc, char** argv) {
 
     // Extracting data
     if (kernel_file != NULL){
-        int status = extract_data(kernel_file, kW, kH, &kernel);
+        int status = extract_data(kernel_file, kW, kH, 0, 0, &kernel);
         for(int i = 0; i < 5; i++){
             //printf("%f\n", kernel[1][i]);
         }
     }
 
-
+    // This is the "same padding" added to the feature map. Width = 0, Height = 1
+    const int padding_width = kW / 2;
+    const int padding_height = kH / 2;
 
 
     // ~~~~~~~~~~~~~~ FEATURE MAP ~~~~~~~~~~~~~~ // 
@@ -199,20 +212,28 @@ int main(int argc, char** argv) {
             // TODO: Handle when it can't extract file dimensions
         }
     }
-    
-    // TODO: Add check to see if the user wants to generate their own feature map.
 
     // Allocate memory for the feature map of the feature map.
-    float** feature_map = (float**)malloc(H * sizeof(float*));
-    for (int i = 0; i < H; i++){
-        feature_map[i] = (float*)malloc(W * sizeof(float));
+    float** feature_map = (float**)malloc((H + padding_height) * sizeof(float*));
+    for (int i = 0; i < (H + padding_height); i++){
+        feature_map[i] = (float*)malloc((W + padding_width) * sizeof(float));
+    }
+    
+    // Add zeroes to each element in the 2d array
+    for (int i = 0; i < (W + padding_width); i++){
+        for (int j = 0; j < (H + padding_height); j++){
+            feature_map[i][j] = 0.0;
+        }
     }
 
     // Extract Feature Map
     if (feature_file != NULL){
-        int status = extract_data(feature_file, W, H, &feature_map);
-        for(int i = 0; i < 5; i++){
-            //printf("%f\n", feature_map[0][i]);
+        int status = extract_data(feature_file, W, H, padding_width, padding_height, &feature_map);
+        for(int i = 0; i <= (W + padding_width); i++){
+            for (int j = 0; j <= (H + padding_height); j++){
+                printf("%f ", feature_map[i][j]);
+            }
+            printf("\n");
         }
     }
 
