@@ -1,0 +1,38 @@
+# Visual Studio related files
+.vs/
+*.suo
+*.user
+*.ncb
+*.opensdf
+*.sdf
+*.tlog
+*.vcproj.*.filter
+*.vcxproj.user
+*.vcxproj.filters
+*.sln.docstates
+
+# Build artifacts
+Debug/
+Release/
+x64/
+Win32/
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.log
+*.exp
+*.aps
+*.bsc
+*.map
+*.res
+*.sbr
+*.pch
+ipch/
+
+# Temporary files
+*.~
+*.bak
+*.tmp
