@@ -26,6 +26,8 @@ int extract_dimensions(char* filepath, int* height, int* width) {
     token = strtok(NULL, " ");
     *width = atoi(token);
 
+    fclose(file_ptr);
+
     return 0;
 }
 
@@ -46,23 +48,25 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
     if (file_ptr == NULL){ return 1; }
 
     // Create a buffer to place extracted strings into
-    const size_t buffer_size = (FLOAT_STRING_LENGTH * width) + 1; // +1 for null-byte
+    const size_t buffer_size = (FLOAT_STRING_LENGTH * width) + 2; // +2 for new-line and null-byte
     
     char* buffer = (char*)malloc(buffer_size);
 
+    // get the header line here, so we can safely ignore it later
+    fgets(buffer, buffer_size, file_ptr);
+
     // Now loop over each line in the file
-    int row_index = padding_height;
-    while (row_index <= (height + padding_height*2)){
+    int row_index = 0;
+    while (row_index < (height + padding_height)){
         
-        // If we get to the end and there's no more lines to analyze, continue until done
-        if (fgets(buffer, buffer_size, file_ptr) == NULL) {
+        if(row_index < padding_height){
             row_index++;
             continue;
         }
 
-        // Skip the first line + any padding lines
-        if (row_index <= padding_height) {
-            row_index++;
+        fgets(buffer, buffer_size, file_ptr);
+
+        if (buffer == NULL) {
             continue;
         }
 
@@ -72,13 +76,14 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
         int column_index = padding_width;
         while (token != NULL){
             float element = (float)atof(token);
-            (*output)[row_index-1][column_index] = element; // Add to output. Need to do "-1" to avoid the first line.
+            (*output)[row_index][column_index] = element; // Add to output.
             token = strtok(NULL, " ");
             column_index++;
         }
         row_index++;
     }
-    
+    free(buffer);
+    fclose(file_ptr);
     return 0;
 }
 
@@ -132,18 +137,38 @@ int write_outputs(char* filepath, float** outputs, int h_dimension, int w_dimens
     if (file_ptr == NULL){ return 1; }
 
     // Empty the file, then close it.
-    fprintf(file_ptr, "");
     fclose(file_ptr);
 
     // Reopen file in append mode
-    FILE* file_ptr = fopen(filepath, "a");
+    file_ptr = fopen(filepath, "a");
 
     // Append the dimensions to the file
+    fprintf(file_ptr, "%d %d\n", h_dimension, w_dimension);
+    
+    for (int i=0; i<h_dimension; i++){
+        for (int j=0; j<w_dimension; j++){
+            fprintf(file_ptr, "%.3f ", outputs[i][j]);
+        }
+        fprintf(file_ptr, "\n");
+    }
 
-    // Append every number to the file, remember to round to 3 decimals:    fprintf("%.3f ", number);
+    fclose(file_ptr);
 
     // Close file
 
+    return 0;
+
+}
+
+// TODO: Delete. This is for debugging only.
+void print2df(char* msg, float** arr, int size_x, int size_y){
+    printf("\n%s\n", msg);
+    for (int i=0; i<size_y; i++){
+        for (int j=0; j<size_x; j++){
+            printf("%f ", arr[i][j]);
+        }
+        printf("\n");
+    }
 }
 
 int main(int argc, char** argv) {
@@ -205,12 +230,19 @@ int main(int argc, char** argv) {
 
     */
 
+    /* 
+    TODO:
+        - (optionally) generate inputs. Both kernel and feature map.
+        - Test to see if weirdly shaped kernels also work, e.g., 5x3, 2x1, 1x1, 1x9, 50x1, 25x10, etc
+    */
 
-    // TODO: (optionally) generate inputs
-    // TODO: Add check to see if the user wants to generate their own feature map.
 
 
     // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
+
+    // Check if we need to generate our own kernel
+    bool should_generate_kernel = false;
+
 
     // Extracting dimensions
     if (kernel_file != NULL && (kH <= 0 || kW <= 0)){
@@ -239,8 +271,7 @@ int main(int argc, char** argv) {
     const int padding_height = kH / 2;
 
     
-
-
+    
     // ~~~~~~~~~~~~~~ FEATURE MAP ~~~~~~~~~~~~~~ // 
 
     // Extract dimensions of the feature map
@@ -292,13 +323,15 @@ int main(int argc, char** argv) {
     }
 
     
-    // TODO: (optionally) write to output file
 
-    // ...
+    // ~~~~~~~~~~~~~~ Write to Output ~~~~~~~~~~~~~~ //
 
-    // profit?
-        
-    
+    if (output_file != NULL){
+        int status = write_outputs(output_file, outputs, H, W);
+        if (status != 0){
+            // TODO: Handle when can't write to output.
+        }
+    }
     return 0;
 }
 
