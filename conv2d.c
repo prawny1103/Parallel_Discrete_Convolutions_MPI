@@ -187,13 +187,14 @@ int parallel_conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_pa
     const int N_offset = kW % 2 == 0 ? 1 : 0;
 
     // TODO: maybe we want to do reduction here idk
-    #pragma omp parallel for collapse(2) shared(M, N, M_offset, N_offset, f, g)
     for (int n = h_padding; n < total_height; n++){       // feature : Iterate over Rows
         for (int k = w_padding; k < total_width; k++){    // feature : Iterate over columns
 
             float result = 0.0f;
 
             for (int i = -M; i <= M - M_offset; i++){               // kernel : Iterate over Rows
+                
+                //#pragma omp parallel for reduction(+:result) firstprivate(f, g, n, i, k, M, N, N_offset)
                 for (int j = -N; j <= N - N_offset; j++){           // kernel : Iterate over columns
                     const int col = n + i;
                     const int row = k + j;
@@ -289,10 +290,44 @@ void v_printf(char* msg, int verbose_mode){
     if (verbose_mode == 0) printf("%s", msg);
 }
 
+
+// Just a simple test to see if parallelisation is working
+void parallel_testing(float** numbers, int height, int width, int threads){
+    printf("\n");
+    omp_set_num_threads(threads);
+    printf("Threads:        %d\n", threads);
+    
+    // MEMORY HEAVY
+    float result = 0.0f;
+    clock_t start_time = clock();
+
+    #pragma omp parallel for collapse(2) reduction(+:result) schedule(guided)
+    for (int i = 0; i < height; i++){
+        for (int j = 0; j < width; j++){
+            result += numbers[i][j];
+        }
+    } 
+    printf("Memory Time:    %f\n", (double)(clock() - start_time) / CLOCKS_PER_SEC);
+
+    // COMPUTATION HEAVY
+    result = 0.0f;
+    start_time = clock();
+
+    #pragma omp parallel for collapse(2) reduction(+:result) schedule(guided)
+    for (int i = 0; i < height; i++){
+        for (int j = 0; j < width; j++){
+            result += numbers[i][j] * numbers[i][j] * numbers[i][j] * numbers[i][j];
+        }
+    } 
+    printf("Compute Time:   %f\n", (double)(clock() - start_time) / CLOCKS_PER_SEC);
+}
+
+
+
 int main(int argc, char** argv) {
     
     // Initialising variables for future use
-    // TODO: we should alignas(64) all of these, to avoid False Sharing
+    // TODO: we should align all of these, to avoid False Sharing
     int H = 0;
     int W = 0;
     int kH = 0;
@@ -354,9 +389,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if(parallel == 0) {
-        omp_set_num_threads(4);
-    } // Set to 4 threads for now, TODO: Make this a flag
+    omp_set_num_threads(4); // TODO: Maybe make this a flag?
 
     /* 
     TODO: Error catching for incorrect flag usage
@@ -409,6 +442,13 @@ int main(int argc, char** argv) {
             }
         }
 
+        parallel_testing(kernel, kH, kW, 1);
+        parallel_testing(kernel, kH, kW, 4);
+        parallel_testing(kernel, kH, kW, 8);
+        parallel_testing(kernel, kH, kW, 16);
+        parallel_testing(kernel, kH, kW, 32);
+        return 0;
+
         v_printf("Finished.\n", verbose_mode);
 
     // Extract Kernel
@@ -435,6 +475,14 @@ int main(int argc, char** argv) {
                 // TODO: Handle when can't extract kernel
             }
         }
+
+        parallel_testing(kernel, kH, kW, 1);
+        parallel_testing(kernel, kH, kW, 4);
+        parallel_testing(kernel, kH, kW, 8);
+        parallel_testing(kernel, kH, kW, 16);
+        parallel_testing(kernel, kH, kW, 32);
+        return 0;
+
         v_printf("Finished.\n", verbose_mode);
     }
 
@@ -475,6 +523,7 @@ int main(int argc, char** argv) {
                 // TODO: Handle when it can't write to feature file
             }
         }
+
         v_printf("Finished.\n", verbose_mode);
 
     // Extract Feature Map
@@ -507,6 +556,9 @@ int main(int argc, char** argv) {
         }
         v_printf("Finished.\n", verbose_mode);
     }
+
+
+    
 
     
     // ~~~~~~~~~~~~~~ conv2d() ~~~~~~~~~~~~~~ //
