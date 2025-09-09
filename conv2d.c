@@ -1,9 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-// The string length of every float in the feature map. Example line: "0.594 0.934 0.212\n". So, 3 floats, each looks like "X.XXX" which is 5 chars, but then all have a space or
+/* The string length of every float in the feature map. Example line: "0.594 0.934 0.212\n". 
+So, 3 floats, each looks like "X.XXX" which is 5 chars, but then all have a space or new-line 
+character. */
 #define FLOAT_STRING_LENGTH 6
+
+#define max(a,b) (((a) > (b)) ? (a) : (b))
 
 int extract_dimensions(char* filepath, int* height, int* width) {
 
@@ -34,12 +39,12 @@ int extract_dimensions(char* filepath, int* height, int* width) {
 
 /* 
     Reads an input file and extracts data into an output. 
-    @param filepath The filepath where the data is stored.
-    @param width  The number of elements in each line. Width.
-    @param height The number of rows. Height.
-    @param padding_width The number of zeroes to pad the width with.
-    @param padding_height The number of zeroes to pad the height with.
-    @param output   The stream into which the inputs will be stored.
+    @param filepath         The filepath where the data is stored.
+    @param width            The number of elements in each line. Width.
+    @param height           The number of rows. Height.
+    @param padding_width    The number of zeroes to pad the width with.
+    @param padding_height   The number of zeroes to pad the height with.
+    @param output           The stream into which the inputs will be stored.
 */
 int extract_data(char* filepath, int width, int height, int padding_width, int padding_height, float** *output) {
     
@@ -87,6 +92,7 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
     return 0;
 }
 
+
 // Function to perform 2D discrete convolution
 int conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, int h_padding, float** output){
 
@@ -124,14 +130,15 @@ int conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, in
     return 0;
 }
 
+
 /*
 Writes outputs to a file.
-@param filepath The filepath of where to find/put the output file.
-@param outputs The 2d convolutions outputs. This is what is written to the file.
-@param h_dimension The height of the outputs. Should be the same as the feature map.
-@param w_dimension The width of the outputs. Should be the same as the feature map.
+@param filepath     The filepath of where to find/put the output file.
+@param outputs      The 2d convolutions outputs. This is what is written to the file.
+@param h_dimension  The height of the outputs. Should be the same as the feature map.
+@param w_dimension  The width of the outputs. Should be the same as the feature map.
 */
-int write_outputs(char* filepath, float** outputs, int h_dimension, int w_dimension){
+int write_data_to_file(char* filepath, float** outputs, int h_dimension, int w_dimension, int h_padding, int w_padding){
     if (filepath == NULL){ return 1; }
     FILE* file_ptr = fopen(filepath, "w");
     if (file_ptr == NULL){ return 1; }
@@ -145,20 +152,19 @@ int write_outputs(char* filepath, float** outputs, int h_dimension, int w_dimens
     // Append the dimensions to the file
     fprintf(file_ptr, "%d %d\n", h_dimension, w_dimension);
     
-    for (int i=0; i<h_dimension; i++){
-        for (int j=0; j<w_dimension; j++){
-            fprintf(file_ptr, "%.3f ", outputs[i][j]);
+    for (int i = h_padding; i < h_dimension + h_padding; i++){
+        for (int j = w_padding; j < w_dimension + w_padding; j++){
+            fprintf(file_ptr, "%.3f ", outputs[i-h_padding][j-w_padding]);
         }
         fprintf(file_ptr, "\n");
     }
 
     fclose(file_ptr);
 
-    // Close file
-
     return 0;
 
 }
+
 
 // TODO: Delete. This is for debugging only.
 void print2df(char* msg, float** arr, int size_x, int size_y){
@@ -170,6 +176,34 @@ void print2df(char* msg, float** arr, int size_x, int size_y){
         printf("\n");
     }
 }
+
+
+/*
+Generates a 2d array of random floats.
+@param height   The height of the array.
+@param width    The width of the array.
+@param output   The location where the generated data will be stored.
+*/
+int generate_data(int height, int width, float** *output){
+    
+    // Reallocate required memory
+    *output = (float**)malloc(height * sizeof(float*));
+    for (int i=0; i<height; i++){
+        (*output)[i] = (float*)calloc(width, sizeof(float));
+    }
+
+    // Seed
+    srand(time(0));
+    
+    for (int i=0; i<height; i++){
+        for (int j=0; j<width; j++){
+            (*output)[i][j] = (float)rand() / (float)RAND_MAX;
+        }
+    }
+    
+    return 0;
+}
+
 
 int main(int argc, char** argv) {
     
@@ -234,6 +268,7 @@ int main(int argc, char** argv) {
     TODO:
         - (optionally) generate inputs. Both kernel and feature map.
         - Test to see if weirdly shaped kernels also work, e.g., 5x3, 2x1, 1x1, 1x9, 50x1, 25x10, etc
+        - Compile with `-Wall -Werror` flags, to catch all potential issues. Fix them all, no exceptions.
     */
 
 
@@ -241,32 +276,59 @@ int main(int argc, char** argv) {
     // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
 
     // Check if we need to generate our own kernel
-    bool should_generate_kernel = false;
+    
+    float** kernel;
 
+    // Generate Kernel
+    if (kH > 0 || kW > 0){
 
-    // Extracting dimensions
-    if (kernel_file != NULL && (kH <= 0 || kW <= 0)){
-        int status = extract_dimensions(kernel_file, &kH, &kW);
-        if (status != 0){ 
-            // TODO: Handle when it can't extract file dimensions
+        // Allows users to specify only 1 dimension, and prevents them from inputting negative numbers
+        kH = max(kH, 1);
+        kW = max(kW, 1);
+
+        // Allocating memory
+        kernel = (float**)malloc(kH * sizeof(float*));
+        for (int i = 0; i < kH; i++){
+            kernel[i] = (float*)calloc(kW, sizeof(float));
+        }
+
+        generate_data(kH, kW, &kernel);
+
+        // If wanting to save inputs, write to kernel file
+        if (kernel_file != NULL){
+            int status = write_data_to_file(kernel_file, kernel, kH, kW, 0, 0);
+            if (status != 0){
+                // TODO: Handle when it can't write to kernel
+            }
+        }
+
+    // Extract Kernel
+    } else {
+
+        // Extracting dimensions
+        if (kernel_file != NULL){
+            int status = extract_dimensions(kernel_file, &kH, &kW);
+            if (status != 0){ 
+                // TODO: Handle when it can't extract file dimensions
+            }
+        }
+
+        // Allocating memory
+        kernel = (float**)malloc(kH * sizeof(float*));
+        for (int i = 0; i < kH; i++){
+            kernel[i] = (float*)calloc(kW, sizeof(float));
+        }
+
+        // Extracting data
+        if (kernel_file != NULL){
+            int status = extract_data(kernel_file, kW, kH, 0, 0, &kernel);
+            if (status != 0){
+                // TODO: Handle when can't extract kernel
+            }
         }
     }
 
-    // Allocating memory
-    float** kernel = (float**)malloc(kH * sizeof(float*));
-    for (int i = 0; i < kH; i++){
-        kernel[i] = (float*)malloc(kW * sizeof(float));
-    }
-
-    // Extracting data
-    if (kernel_file != NULL){
-        int status = extract_data(kernel_file, kW, kH, 0, 0, &kernel);
-        if (status != 0){
-            // TODO: Handle when can't extract kernel
-        }
-    }
-
-    // This is the "same padding" added to the feature map. Width = 0, Height = 1
+    // This is the "same padding" that'll be added to the feature map.
     const int padding_width = kW / 2;
     const int padding_height = kH / 2;
 
@@ -274,60 +336,89 @@ int main(int argc, char** argv) {
     
     // ~~~~~~~~~~~~~~ FEATURE MAP ~~~~~~~~~~~~~~ // 
 
-    // Extract dimensions of the feature map
-    if (feature_file != NULL && (H <= 0 || W <= 0)){
-        int status = extract_dimensions(feature_file, &H, &W);
-        if (status != 0){ 
-            // TODO: Handle when it can't extract file dimensions
-        }
-    }
+    float** feature_map;
 
-    const int total_width = W + padding_width*2;
-    const int total_height = H + padding_height*2;
+    // Generate Feature Map
+    if (H > 0 || W > 0){
 
-    // Allocate memory for the feature map of the feature map.
-    float** feature_map = (float**)malloc(total_height * sizeof(float*));
-    for (int i = 0; i < total_height; i++){
-        feature_map[i] = (float*)malloc(total_width * sizeof(float));
-    }
-    
-    // Add zeroes to pad the 2d array
-    for (int i = 0; i < (total_height); i++){
-        for (int j = 0; j < (total_width); j++){
-            feature_map[i][j] = 0.0;
+        // Allows users to specify only 1 dimension, and prevents them from inputting negative numbers
+        H = max(H, 1);
+        W = max(W, 1);
+
+        const int total_width = W + padding_width*2;
+        const int total_height = H + padding_height*2;
+
+        // Allocating memory
+        feature_map = (float**)malloc(total_height * sizeof(float*));
+        for (int i = 0; i < total_height; i++){
+            feature_map[i] = (float*)calloc(total_width, sizeof(float)); // calloc sets all to zero, creating padding
         }
-    }
+
+        generate_data(total_height, total_width, &feature_map);
+
+        // If wanting to save inputs, write to feature file
+        if (feature_file != NULL){
+            int status = write_data_to_file(feature_file, feature_map, H, W, padding_height, padding_width);
+            if (status != 0){
+                // TODO: Handle when it can't write to feature file
+            }
+        }
 
     // Extract Feature Map
-    if (feature_file != NULL){
-        int status = extract_data(feature_file, W, H, padding_width, padding_height, &feature_map);
-        if (status != 0){
-            // TODO: Handle when it can't extract data
+    } else {
+        // Extract dimensions of the feature map
+        if (feature_file != NULL){
+            int status = extract_dimensions(feature_file, &H, &W);
+            if (status != 0){ 
+                // TODO: Handle when it can't extract file dimensions
+            }
+        }
+
+        const int total_width = W + padding_width*2;
+        const int total_height = H + padding_height*2;
+
+        // Allocate memory for the feature map of the feature map.
+        feature_map = (float**)malloc(total_height * sizeof(float*));
+        for (int i = 0; i < total_height; i++){
+            feature_map[i] = (float*)calloc(total_width, sizeof(float)); // calloc sets all to zero, creating padding
+        }
+
+        // Extract Feature Map
+        if (feature_file != NULL){
+            int status = extract_data(feature_file, W, H, padding_width, padding_height, &feature_map);
+            if (status != 0){
+                // TODO: Handle when it can't extract data
+            }
         }
     }
 
     
-
     // ~~~~~~~~~~~~~~ conv2d() ~~~~~~~~~~~~~~ //
-
-    // Allocating memory
-    float** outputs = (float**)malloc(H * sizeof(float*));
-    for (int i = 0; i < H; i++){
-        outputs[i] = (float*)malloc(W * sizeof(float));
-    }
     
-    // Convolutions
-    int status = conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, outputs);
-    if (status != 0){
-        // TODO: Handle when can't perform convolutions
-    }
 
-    
+    if (output_file != NULL){
+
+        if (kernel[0] == NULL || feature_map[0] == NULL){
+            printf("To generate an output, please provide all inputs.\n");
+            return 1;
+        }
+
+        // Allocating memory
+        float** outputs = (float**)malloc(H * sizeof(float*));
+        for (int i = 0; i < H; i++){
+            outputs[i] = (float*)calloc(W, sizeof(float));
+        }
+        
+        // Convolutions
+        int status = conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, outputs);
+        if (status != 0){
+            // TODO: Handle when can't perform convolutions
+        }
+
 
     // ~~~~~~~~~~~~~~ Write to Output ~~~~~~~~~~~~~~ //
 
-    if (output_file != NULL){
-        int status = write_outputs(output_file, outputs, H, W);
+        status = write_data_to_file(output_file, outputs, H, W, 0, 0);
         if (status != 0){
             // TODO: Handle when can't write to output.
         }
