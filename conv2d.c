@@ -9,6 +9,7 @@ character. */
 #define FLOAT_STRING_LENGTH 6
 
 #define max(a,b) (((a) > (b)) ? (a) : (b))
+#define min(a,b) (((a) < (b)) ? (a) : (b))
 
 int extract_dimensions(char* filepath, int* height, int* width) {
 
@@ -102,19 +103,24 @@ int conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, in
     int max_height = H;
     int max_width = W;
 
+    // dimensions for convolution window
+    int M = (kH / 2);// - (kH % 2 == 0 ? 1 : 0);
+    int N = (kW / 2);// - (kW % 2 == 0 ? 1 : 0);
+
     // Iterate every value in the feature map
     for (int n = h_padding; n < total_height-h_padding; n++){
         for (int k = w_padding; k < total_width-w_padding; k++){
             
-            // dimensions for convolution window
-            int M = kH / 2;
-            int N = kW / 2;
             float result = 0;
+
+            // Offsets allow for asymmetric padding to account for evenly sized kernels
+            int M_offset = kH % 2 == 0 ? 1 : 0;
+            int N_offset = kW % 2 == 0 ? 1 : 0;
 
             // Convolution formula applied here, extra dimension (N) to make it 2d
             // Iterate every value in the kernel
-            for (int i = 0-M; i <= M; i++){
-                for (int j = 0-N; j <= N; j++){
+            for (int i = 0-M; i <= M - M_offset; i++){
+                for (int j = 0-N; j <= N - N_offset; j++){
                     int col = n+i;
                     int row = k+j;
 
@@ -207,6 +213,8 @@ int generate_data(int height, int width, float** *output){
 
 int main(int argc, char** argv) {
     
+    clock_t start_time = clock();
+
     // Initialising variables for future use
     // TODO: we should alignas(64) all of these, to avoid False Sharing
     int H = 0;
@@ -217,10 +225,12 @@ int main(int argc, char** argv) {
     char* kernel_file = NULL;
     char* output_file = NULL;
 
+    int is_benchmarking = 1; // 1=false, 0=true
+
     // Extract arguments into their variables
     for (int i = 1; i < argc; i++) {
 
-        if (i + 1 >= argc) { break; }
+        if (i + 1 > argc) { break; }
 
         // Check all flags
         if (strcmp(argv[i], "-H") == 0) {
@@ -249,6 +259,10 @@ int main(int argc, char** argv) {
         }
         if (strcmp(argv[i], "-o") == 0) {
             output_file = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "-b") == 0) {
+            is_benchmarking = 0;
             continue;
         }
     }
@@ -423,69 +437,13 @@ int main(int argc, char** argv) {
             // TODO: Handle when can't write to output.
         }
     }
+
+    clock_t end_time = clock();
+    double total_time_taken = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+
+    if (is_benchmarking == 0){
+        printf("Time:   %f\n", total_time_taken);
+    }
+    
     return 0;
 }
-
-
-
-
-
-
-
-
-/* 
-PYTHON CODE EXAMPLE
-    - This works perfectly (for serial convolution)
-    - It does NOT work to the specs of the project, but this is a good starting point for when we need to write conv2d()
-    - The variable names all specifically follow the formula in the project description.
-    - The variable values of `feature` and `kernel` are exactly the same as in Figure 1 from the project description, showing that it works.
-
-
-feature = [
-    [0.1,1.0,0.1,0.7,0.3,1.0],
-    [0.7,0.8,0.1,0.5,0.7,1.0],
-    [1.0,0.5,0.2,0.3,0.6,0.9],
-    [0.2,0.0,0.9,0.1,0.5,0.8],
-    [0.1,0.7,0.9,0.0,0.2,0.6],
-    [0.9,0.2,0.6,0.1,0.7,0.4]
-    ]
-    
-kernel = [
-    [1.0,0.7,0.6],
-    [0.0,0.4,0.1],
-    [0.1,0.1,0.5]
-    ]
-*/
-
-/*
-def conv(f,g):
-    max_height = len(f) - 2                                     H - 2
-    max_width = len(f[0]) - 2                                   W - 2
-    output = [[0]*max_width for _ in range(max_height)]         output
-
-    # Loop width/height to make the output array
-    for n in range(1, max_width+1):
-        for k in range(1, max_height+1):
-            
-            # dimensions for convolution window
-            M = len(g) // 2
-            N = len(g[0]) // 2
-            result = 0
-
-            # Convolution formula applied here, extra dimension (N) to make it 2d
-            for i in range(-M, M+1):
-                for j in range(-N, N+1):
-                    row = n+i
-                    col = k+j
-
-                    # Stop if we're about to check a row/column that's OOB
-                    if 0 <= row < len(f) and 0 <= col < len(f[0]): 
-                        result += f[row][col] * g[i+M][j+N]
-            output[n-1][k-1] = round(result,1)
-    return output
-
-output = conv(feature,kernel)
-for row in output:
-    print(row)
-
-*/
