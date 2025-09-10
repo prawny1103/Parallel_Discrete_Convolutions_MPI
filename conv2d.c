@@ -638,6 +638,8 @@ int main(int argc, char** argv) {
         }
 
         free(outputs);
+        if (padded_outputs.arr != NULL) { free(padded_outputs.arr); }
+        if (padded_outputs.padding != NULL) { free(padded_outputs.padding); }
 
     }
 
