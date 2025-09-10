@@ -145,9 +145,7 @@ int conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, in
     // Iterate over every value in the feature map
     for (int n = h_padding; n < total_height; n++){       // feature : Iterate over Rows
         for (int k = w_padding; k < total_width; k++){    // feature : Iterate over columns
-
             float result = 0.0f;
-
             for (int i = -M; i <= M - M_offset; i++){               // kernel : Iterate over Rows
                 for (int j = -N; j <= N - N_offset; j++){           // kernel : Iterate over columns
                     const int col = n + i;
@@ -186,15 +184,18 @@ int parallel_conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_pa
     const int M_offset = kH % 2 == 0 ? 1 : 0;
     const int N_offset = kW % 2 == 0 ? 1 : 0;
 
+    float** temp_output;
+    temp_output = (float**)malloc(H * sizeof(float*));
+    for (int i = 0; i < H; i++){
+        temp_output[i] = (float*)calloc(W, sizeof(float));
+    }
+
     // TODO: maybe we want to do reduction here idk
+    #pragma omp parallel for collapse(2) firstprivate(temp_output, f, g, H, W, kH, kW, w_padding, h_padding, total_height, total_width, M, N, M_offset, N_offset)
     for (int n = h_padding; n < total_height; n++){       // feature : Iterate over Rows
         for (int k = w_padding; k < total_width; k++){    // feature : Iterate over columns
-
             float result = 0.0f;
-
             for (int i = -M; i <= M - M_offset; i++){               // kernel : Iterate over Rows
-                
-                //#pragma omp parallel for reduction(+:result) firstprivate(f, g, n, i, k, M, N, N_offset)
                 for (int j = -N; j <= N - N_offset; j++){           // kernel : Iterate over columns
                     const int col = n + i;
                     const int row = k + j;
@@ -203,8 +204,10 @@ int parallel_conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_pa
                 }
             }
             output[n - h_padding][k - w_padding] = result;
-        }
+        } 
     }
+
+    free(temp_output);
     return 0;
 }
 
@@ -299,33 +302,44 @@ void parallel_testing(float** numbers, int height, int width, int threads){
     
     // MEMORY HEAVY
     float result = 0.0f;
-    clock_t start_time = clock();
-
-    #pragma omp parallel for collapse(2) reduction(+:result) schedule(guided)
+    
+    #pragma omp parallel for collapse(2) reduction(+:result) schedule(guided) firstprivate(numbers)
     for (int i = 0; i < height; i++){
         for (int j = 0; j < width; j++){
             result += numbers[i][j];
         }
-    } 
-    printf("Memory Time:    %f\n", (double)(clock() - start_time) / CLOCKS_PER_SEC);
-
-    // COMPUTATION HEAVY
+    }
     result = 0.0f;
-    start_time = clock();
 
-    #pragma omp parallel for collapse(2) reduction(+:result) schedule(guided)
+    clock_t start_time = clock();
+
+    #pragma omp parallel for collapse(2) reduction(+:result) schedule(guided) firstprivate(numbers)
     for (int i = 0; i < height; i++){
         for (int j = 0; j < width; j++){
             result += numbers[i][j] * numbers[i][j] * numbers[i][j] * numbers[i][j];
         }
     } 
     printf("Compute Time:   %f\n", (double)(clock() - start_time) / CLOCKS_PER_SEC);
+
+    // COMPUTATION HEAVY
+    result = 0.0f;
+    start_time = clock();
+
+    #pragma omp parallel for collapse(2) reduction(+:result) schedule(guided) firstprivate(numbers)
+    for (int i = 0; i < height; i++){
+        for (int j = 0; j < width; j++){
+            result +=numbers[i][j];
+        }
+    } 
+    printf("Memory Time:    %f\n", (double)(clock() - start_time) / CLOCKS_PER_SEC);
 }
 
 
 
 int main(int argc, char** argv) {
     
+    double file_start_time = omp_get_wtime();
+
     // Initialising variables for future use
     // TODO: we should align all of these, to avoid False Sharing
     int H = 0;
@@ -401,16 +415,12 @@ int main(int argc, char** argv) {
         4. Provided output, but generated/provided no input
         5. Incompatible datatype passed through for that flag.
 
-    */
-
-    /* 
+    
     TODO:
         - (optionally) generate inputs. Both kernel and feature map.
         - Test to see if weirdly shaped kernels also work, e.g., 5x3, 2x1, 1x1, 1x9, 50x1, 25x10, etc
         - Compile with `-Wall -Werror` flags, to catch all potential issues. Fix them all, no exceptions.
     */
-
-
 
     // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
 
@@ -442,13 +452,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        parallel_testing(kernel, kH, kW, 1);
-        parallel_testing(kernel, kH, kW, 4);
-        parallel_testing(kernel, kH, kW, 8);
-        parallel_testing(kernel, kH, kW, 16);
-        parallel_testing(kernel, kH, kW, 32);
-        return 0;
-
         v_printf("Finished.\n", verbose_mode);
 
     // Extract Kernel
@@ -475,13 +478,6 @@ int main(int argc, char** argv) {
                 // TODO: Handle when can't extract kernel
             }
         }
-
-        parallel_testing(kernel, kH, kW, 1);
-        parallel_testing(kernel, kH, kW, 4);
-        parallel_testing(kernel, kH, kW, 8);
-        parallel_testing(kernel, kH, kW, 16);
-        parallel_testing(kernel, kH, kW, 32);
-        return 0;
 
         v_printf("Finished.\n", verbose_mode);
     }
@@ -582,8 +578,11 @@ int main(int argc, char** argv) {
         v_printf("Finished.\n", verbose_mode);
         
         v_printf("Performing Convolutions...        ", verbose_mode);
+
+
+
         // Timing begins here, because implementation only starts here.
-        clock_t start_time = clock();
+        double parallel_start_time = omp_get_wtime();
 
         // Convolutions
         if (parallel == 0){
@@ -599,10 +598,10 @@ int main(int argc, char** argv) {
         }
         v_printf("Finished.\n", verbose_mode);
         
-        clock_t end_time = clock();
-        double total_time_taken = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+        double parallel_end_time = omp_get_wtime();
+        double parallel_time_taken = (parallel_end_time - parallel_start_time);
 
-        if (benchmark_mode == 0) printf("Time:   %f\n", total_time_taken);
+        if (benchmark_mode == 0) printf("Parallel Time: %f\n", parallel_time_taken);
 
 
     // ~~~~~~~~~~~~~~ Write to Output ~~~~~~~~~~~~~~ //
@@ -614,9 +613,18 @@ int main(int argc, char** argv) {
             // TODO: Handle when can't write to output.
         }
 
+        free(outputs);
+
         v_printf("Finished.\n", verbose_mode);
     }
 
+    free(feature_map);
+    free(kernel);
+
     v_printf("Finished!\n", verbose_mode);
+
+    double file_end_time = omp_get_wtime();
+    double file_time_taken = (file_end_time - file_start_time);
+    if (benchmark_mode == 0) printf("Total Time:    %f\n", file_time_taken);
     return 0;
 }
