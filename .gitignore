@@ -44,3 +44,4 @@ conv2d
 # testing files
 *.txt
 *.py
+*.slurm

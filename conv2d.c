@@ -189,7 +189,7 @@ int parallel_conv2d(float* f, int H, int W, float* g, int kH, int kW, int w_padd
     const int N_offset = kW % 2 == 0 ? 1 : 0;
 
     // Each thread is assigned a different row
-    const int chunk = (total_width - w_padding);
+    const int chunk = (total_width - w_padding*2);
 
     #pragma omp parallel for collapse(2) schedule(dynamic, chunk) firstprivate(f, g, H, W, kH, kW, w_padding, h_padding, total_height, total_width, M, N, M_offset, N_offset)
     for (int n = h_padding; n < total_height - h_padding; n++){
@@ -421,7 +421,7 @@ int main(int argc, char** argv) {
     */
 
     // TODO: remove this before submission, this is just for testing
-    for (int iteration = 0; iteration < 15; iteration++){
+    //for (int iteration = 0; iteration < 15; iteration++){
 
     // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
 
@@ -567,7 +567,7 @@ int main(int argc, char** argv) {
 
         // Defining output pointers
         float* outputs = NULL;      // Used for serial convolution
-        float_array padded_outputs; // Used for parallel convolution
+        float_array padded_outputs = {0}; // Used for parallel convolution
 
         // if (posix_memalign((void**)&padded_outputs, 64, sizeof(float_array))){
         //     // TODO: Handle error
@@ -615,10 +615,6 @@ int main(int argc, char** argv) {
                 // TODO: Handle error
                 printf("Error allocating memory for outputs.\n");
             }
-            for (int i = 0; i < W * H; i++){
-                outputs[i] = 0.0f;
-            }
-
 
             double start_time = omp_get_wtime();
 
@@ -653,6 +649,6 @@ int main(int argc, char** argv) {
     double file_time_taken = (file_end_time - file_start_time);
     //if (benchmark_mode == 0) printf("Total Time:    %f\n", file_time_taken);
 
-    } // TODO: remove this before submission, this is just for testing many iterations.
+    //} // TODO: remove this before submission, this is just for testing many iterations.
     return 0;
 }
