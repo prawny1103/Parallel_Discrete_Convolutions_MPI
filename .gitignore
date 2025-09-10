@@ -10,6 +10,7 @@
 *.vcxproj.user
 *.vcxproj.filters
 *.sln.docstates
+.vscode
 
 # Build artifacts
 Debug/

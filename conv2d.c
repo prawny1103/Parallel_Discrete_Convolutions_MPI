@@ -33,29 +33,43 @@ int extract_dimensions(char* filepath, int* height, int* width) {
 /* 
     Reads an input file and extracts data into an output. 
     @param filepath The filepath where the data is stored.
-    @param f_width  The number of elements in each line. Width.
-    @param f_height The number of rows. Height.
+    @param width  The number of elements in each line. Width.
+    @param height The number of rows. Height.
+    @param padding_width The number of zeroes to pad the width with.
+    @param padding_height The number of zeroes to pad the height with.
     @param output   The stream into which the inputs will be stored.
 */
-int extract_data(char* filepath, int f_width, int f_height, float** *output) {
-    const size_t buffer_size = (FLOAT_STRING_LENGTH * f_width) + 1; // +1 for null-byte
-
+int extract_data(char* filepath, int width, int height, int padding_width, int padding_height, float** *output) {
+    
     if (filepath == NULL){ return 1; }
+    FILE* file_ptr = fopen(filepath, "r");
+    if (file_ptr == NULL){ return 1; }
+
+    // Create a buffer to place extracted strings into
+    const size_t buffer_size = (FLOAT_STRING_LENGTH * width) + 1; // +1 for null-byte
+    
     char* buffer = (char*)malloc(buffer_size);
 
-    FILE* file_ptr = fopen(filepath, "r");
-
     // Now loop over each line in the file
-    int row_index = 0;
-    while (fgets(buffer, buffer_size, file_ptr) != NULL){
-        if (row_index == 0) {
+    int row_index = padding_height;
+    while (row_index <= (height + padding_height*2)){
+        
+        // If we get to the end and there's no more lines to analyze, continue until done
+        if (fgets(buffer, buffer_size, file_ptr) == NULL) {
             row_index++;
             continue;
         }
+
+        // Skip the first line + any padding lines
+        if (row_index <= padding_height) {
+            row_index++;
+            continue;
+        }
+
         char* token = strtok(buffer, " ");
 
         // Now loop over each number in the line
-        int column_index = 0;
+        int column_index = padding_width;
         while (token != NULL){
             float element = (float)atof(token);
             (*output)[row_index-1][column_index] = element; // Add to output. Need to do "-1" to avoid the first line.
@@ -64,36 +78,42 @@ int extract_data(char* filepath, int f_width, int f_height, float** *output) {
         }
         row_index++;
     }
+    
     return 0;
 }
 
 // Function to perform 2D discrete convolution
-int conv2d(float** f, int H, int W, float** g, float kH, int kW, float** output){
+int conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, int h_padding, float** output){
 
-    int max_height = H - 2;
-    int max_width = W - 2;
+    const int total_height = H + h_padding*2;
+    const int total_width = W + w_padding*2;
 
-    for (int n = 1; n < max_width; n++){
-        for (int k = 1; k < max_height; k++){
+    int max_height = H;
+    int max_width = W;
 
+    // Iterate every value in the feature map
+    for (int n = h_padding; n < total_height-h_padding; n++){
+        for (int k = w_padding; k < total_width-w_padding; k++){
+            
             // dimensions for convolution window
-            int M = kW / 2;
-            int N = kH / 2;
+            int M = kH / 2;
+            int N = kW / 2;
             float result = 0;
 
             // Convolution formula applied here, extra dimension (N) to make it 2d
+            // Iterate every value in the kernel
             for (int i = 0-M; i <= M; i++){
                 for (int j = 0-N; j <= N; j++){
-                    int row = n+i;
-                    int col = k+j;
+                    int col = n+i;
+                    int row = k+j;
 
                     // Stop if we're about to check a row/column that's OOB
-                    if (0 <= row && row < W && 0 <= col && col < H){
-                        result = result + (f[row][col] * g[i+M][j+N]);
+                    if (0 <= row && row < total_width && 0 <= col && col < total_height){
+                        result = result + (f[col][row] * g[i+M][j+N]);
                     }
                 }
             }
-            output[n-1][k-1] = result;
+            output[n-h_padding][k-w_padding] = result;
         }
     }
     return 0;
@@ -160,7 +180,7 @@ int main(int argc, char** argv) {
 
 
     // TODO: (optionally) generate inputs
-
+    // TODO: Add check to see if the user wants to generate their own feature map.
 
 
     // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
@@ -171,6 +191,7 @@ int main(int argc, char** argv) {
         if (status != 0){ 
             // TODO: Handle when it can't extract file dimensions
         }
+        printf("Dimensions: %dx%d\n", kH, kW);
     }
 
     // Allocating memory
@@ -178,16 +199,24 @@ int main(int argc, char** argv) {
     for (int i = 0; i < kH; i++){
         kernel[i] = (float*)malloc(kW * sizeof(float));
     }
-
+    printf("Kernel: \n");
     // Extracting data
     if (kernel_file != NULL){
-        int status = extract_data(kernel_file, kW, kH, &kernel);
-        for(int i = 0; i < 5; i++){
-            //printf("%f\n", kernel[1][i]);
+        int status = extract_data(kernel_file, kW, kH, 0, 0, &kernel);
+        for(int i = 0; i < kH; i++){
+            for (int j = 0; j < kW; j++){
+                printf("%f ", kernel[i][j]);
+            }
+            printf("\n");
         }
+        printf("\n");
     }
 
+    // This is the "same padding" added to the feature map. Width = 0, Height = 1
+    const int padding_width = kW / 2;
+    const int padding_height = kH / 2;
 
+    
 
 
     // ~~~~~~~~~~~~~~ FEATURE MAP ~~~~~~~~~~~~~~ // 
@@ -199,44 +228,56 @@ int main(int argc, char** argv) {
             // TODO: Handle when it can't extract file dimensions
         }
     }
-    
-    // TODO: Add check to see if the user wants to generate their own feature map.
+
+    const int total_width = W + padding_width*2;
+    const int total_height = H + padding_height*2;
 
     // Allocate memory for the feature map of the feature map.
-    float** feature_map = (float**)malloc(H * sizeof(float*));
-    for (int i = 0; i < H; i++){
-        feature_map[i] = (float*)malloc(W * sizeof(float));
+    float** feature_map = (float**)malloc(total_height * sizeof(float*));
+    for (int i = 0; i < total_height; i++){
+        feature_map[i] = (float*)malloc(total_width * sizeof(float));
     }
-
+    
+    // Add zeroes to pad the 2d array
+    for (int i = 0; i < (total_height); i++){
+        for (int j = 0; j < (total_width); j++){
+            feature_map[i][j] = 0.0;
+        }
+    }
+    printf("\nFeature Map: \n");
     // Extract Feature Map
     if (feature_file != NULL){
-        int status = extract_data(feature_file, W, H, &feature_map);
-        for(int i = 0; i < 5; i++){
-            //printf("%f\n", feature_map[0][i]);
+        int status = extract_data(feature_file, W, H, padding_width, padding_height, &feature_map);
+        if (status != 0){
+            // TODO: Handle when it can't extract data
+        }
+        for (int i = 0; i < total_height; i++){
+            for (int j = 0; j < total_width; j++){
+                printf("%f ", feature_map[i][j]);
+            }
+            printf("\n");
         }
     }
 
     
 
-
-
-    
-
-
-    return 0;
-
     // ~~~~~~~~~~~~~~ conv2d() ~~~~~~~~~~~~~~ //
 
     // Allocating memory
-    float** outputs = (float**)malloc(W * sizeof(float*));
+    float** outputs = (float**)malloc(H * sizeof(float*));
     for (int i = 0; i < H; i++){
         outputs[i] = (float*)malloc(W * sizeof(float));
     }
     
-    int status = conv2d(feature_map, H, W, kernel, kH, kW, outputs);
+    printf("\nOutputs: \n");
+    int status = conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, outputs);
     if (status == 0){
-        for (int i = 0; i < 5; i++){
-            printf("%f\n", outputs[0][i]);
+        for (int i = 0; i < H; i++){
+            for (int j = 0; j < W; j++){
+                printf("%.3f ", outputs[i][j]);
+            }
+            printf("\n");
+            
         }
     }
 
