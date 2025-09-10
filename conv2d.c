@@ -77,7 +77,7 @@ int extract_dimensions(char* filepath, int* height, int* width) {
 * @param padding_height   The number of zeroes to pad the height with.
 * @param output           The stream into which the inputs will be stored.
 */
-int extract_data(char* filepath, int width, int height, int padding_width, int padding_height, float** *output) {
+int extract_data(char* filepath, int width, int height, int padding_width, int padding_height, float* *output) {
     
     if (filepath == NULL){ return 1; }
     FILE* file_ptr = fopen(filepath, "r");
@@ -112,7 +112,7 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
         int column_index = padding_width;
         while (token != NULL){
             float element = (float)atof(token);
-            (*output)[row_index][column_index] = element; // Add to output.
+            (*output)[IDX(row_index, column_index, width + 2 * padding_width)] = element; // Add to output.
             token = strtok(NULL, " ");
             column_index++;
         }
@@ -134,10 +134,10 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 * @param h_padding    Height of the padding in the Feature Map.
 * @param output       Pointer to the location where outputs are stored.
 */
-int conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, int h_padding, float** output){
+int conv2d(float* f, int H, int W, float* g, int kH, int kW, int w_padding, int h_padding, float* output){
 
-    const int total_height = H + h_padding;
-    const int total_width = W + w_padding;
+    const int total_height = H + h_padding*2;
+    const int total_width = W + w_padding*2;
 
     // dimensions for convolution window
     const int M = (kH / 2);
@@ -148,18 +148,17 @@ int conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, in
     const int N_offset = kW % 2 == 0 ? 1 : 0;
 
     // Iterate over every value in the feature map
-    for (int n = h_padding; n < total_height; n++){       // feature : Iterate over Rows
-        for (int k = w_padding; k < total_width; k++){    // feature : Iterate over columns
+    for (int n = h_padding; n < total_height - h_padding; n++){       // feature : Iterate over Rows
+        for (int k = w_padding; k < total_width - w_padding; k++){    // feature : Iterate over columns
             float result = 0.0f;
             for (int i = -M; i <= M - M_offset; i++){               // kernel : Iterate over Rows
                 for (int j = -N; j <= N - N_offset; j++){           // kernel : Iterate over columns
-                    const int col = n + i;
-                    const int row = k + j;
-
-                    result += f[col][row] * g[i + M][j + N];
+                    //result += f[col][row] * g[i + M][j + N];
+                    result += f[IDX(n + i, k + j, total_width)] * g[IDX(i + M, j + N, kW)];
                 }
             }
-            output[n - h_padding][k - w_padding] = result;
+            //output[n - h_padding][k - w_padding] = result;
+            output[IDX(n - h_padding, k - w_padding, W)] = result;
         }
     }
     return 0;
@@ -176,10 +175,10 @@ int conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, in
 * @param h_padding    Height of the padding in the Feature Map.
 * @param output       Pointer to the location where outputs are stored.
 */
-int parallel_conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, int h_padding, float_array* padded_output){
+int parallel_conv2d(float* f, int H, int W, float* g, int kH, int kW, int w_padding, int h_padding, float_array padded_output){
 
-    const int total_height = H + h_padding; // While the actual total_height = (H + h_padding * 2), we subtract one now to avoid doing it every loop
-    const int total_width = W + w_padding;
+    const int total_height = H + h_padding*2;
+    const int total_width = W + w_padding*2;
 
     // dimensions for convolution window
     const int M = (kH / 2);
@@ -193,17 +192,18 @@ int parallel_conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_pa
     const int chunk = (total_width - w_padding);
 
     #pragma omp parallel for collapse(2) schedule(dynamic, chunk) firstprivate(f, g, H, W, kH, kW, w_padding, h_padding, total_height, total_width, M, N, M_offset, N_offset)
-    for (int n = h_padding; n < total_height; n++){
-        for (int k = w_padding; k < total_width; k++){
+    for (int n = h_padding; n < total_height - h_padding; n++){
+        for (int k = w_padding; k < total_width - w_padding; k++){
             float result = 0.0f;
 
-            #pragma omp simd collapse(2)
+            #pragma omp simd collapse(2) reduction(+:result)
             for (int j = -N; j <= N - N_offset; j++){
                 for (int i = -M; i <= M - M_offset; i++){
-                    result += f[n + i][k + j] * g[i + M][j + N];
+                    result += f[IDX(n + i, k + j, total_width)] * g[IDX(i + M, j + N, kW)];
                 }
             }
-            padded_output[n - h_padding].arr[k - w_padding] = result;
+            //padded_output[n - h_padding].arr[k - w_padding] = result;
+            padded_output.arr[IDX(n - h_padding, k - w_padding, W)] = result;
         }
     }
     return 0;
@@ -217,7 +217,7 @@ Writes outputs to a file.
 @param h_dimension      The height of the outputs. Should be the same as the feature map.
 @param w_dimension      The width of the outputs. Should be the same as the feature map.
 */
-int write_data_to_file(char* filepath, float** outputs, float_array* padded_outputs, int h_dimension, int w_dimension, int h_padding, int w_padding){
+int write_data_to_file(char* filepath, float* outputs, float_array padded_outputs, int h_dimension, int w_dimension, int h_padding, int w_padding){
     if (filepath == NULL){ return 1; }
     FILE* file_ptr = fopen(filepath, "w");
     if (file_ptr == NULL){ return 1; }
@@ -236,9 +236,9 @@ int write_data_to_file(char* filepath, float** outputs, float_array* padded_outp
 
             // Depending if paralleism is enabled or not, print the outputs
             if (outputs != NULL){
-                fprintf(file_ptr, "%.3f ", outputs[i-h_padding][j-w_padding]);
-            } else if (padded_outputs != NULL){
-                fprintf(file_ptr, "%.3f ", padded_outputs[i-h_padding].arr[j-w_padding]);
+                fprintf(file_ptr, "%.3f ", outputs[IDX(i-h_padding, j-w_padding, w_dimension)]);
+            } else if (padded_outputs.arr != NULL){
+                fprintf(file_ptr, "%.3f ", padded_outputs.arr[IDX(i-h_padding, j-w_padding, w_dimension)]);
             } else { return 1; }
             
         }
@@ -268,12 +268,11 @@ Generates a 2d array of random floats.
 @param width    The width of the array.
 @param output   The location where the generated data will be stored.
 */
-int generate_data(int height, int width, float** *output){
+int generate_data(int height, int width, float* *output){
     
     // Reallocate required memory
-    *output = (float**)malloc(height * sizeof(float*));
-    for (int i=0; i<height; i++){
-        (*output)[i] = (float*)calloc(width, sizeof(float));
+    if(posix_memalign((void**)output, 64, height * width * sizeof(float)) != 0){
+        return 1;
     }
 
     // Make a new random seed. This stops f from being the same as g when the code runs too fast.
@@ -281,7 +280,7 @@ int generate_data(int height, int width, float** *output){
     
     for (int i=0; i<height; i++){
         for (int j=0; j<width; j++){
-            (*output)[i][j] = (float)rand() / (float)RAND_MAX;
+            (*output)[IDX(i,j,width)] = (float)rand() / (float)RAND_MAX;
         }
     }
     return 0;
@@ -422,13 +421,13 @@ int main(int argc, char** argv) {
     */
 
     // TODO: remove this before submission, this is just for testing
-    //for (int iteration = 0; iteration < 15; iteration++){
+    for (int iteration = 0; iteration < 15; iteration++){
 
     // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
 
     // Check if we need to generate our own kernel
     
-    float** kernel = NULL;
+    float* kernel = NULL;
 
     // Generate Kernel
     if (kH > 0 || kW > 0){
@@ -438,19 +437,15 @@ int main(int argc, char** argv) {
         kW = max(kW, 1);
 
         // Allocating memory
-        kernel = (float**)malloc(kH * sizeof(float*));
-        for (int i = 0; i < kH; i++){
-            if (posix_memalign((void**)&kernel[i], 64, W * sizeof(float)) != 0){
-                // TODO: Handle error
-            }
-            //kernel[i] = (float*)calloc(kW, sizeof(float));
+        if (posix_memalign((void**)&kernel, 64, kW * kH * sizeof(float)) != 0){
+            // TODO: Handle error
         }
 
         generate_data(kH, kW, &kernel);
 
         // If wanting to save inputs, write to kernel file
         if (kernel_file != NULL){
-            int status = write_data_to_file(kernel_file, kernel, NULL, kH, kW, 0, 0);
+            int status = write_data_to_file(kernel_file, kernel, (float_array){0}, kH, kW, 0, 0);
             if (status != 0){
                 // TODO: Handle when it can't write to kernel
             }
@@ -468,12 +463,8 @@ int main(int argc, char** argv) {
         }
 
         // Allocating memory
-        kernel = (float**)malloc(kH * sizeof(float*));
-        for (int i = 0; i < kH; i++){
-            if (posix_memalign((void**)&kernel[i], 64, W * sizeof(float)) != 0){
-                // TODO: Handle error
-            }
-            //kernel[i] = (float*)calloc(kW, sizeof(float));
+        if (posix_memalign((void**)&kernel, 64, kW * kH * sizeof(float)) != 0){
+            // TODO: Handle error
         }
 
         // Extracting data
@@ -494,7 +485,7 @@ int main(int argc, char** argv) {
     
     // ~~~~~~~~~~~~~~ FEATURE MAP ~~~~~~~~~~~~~~ // 
 
-    float** feature_map = NULL;
+    float* feature_map = NULL;
 
     // Generate Feature Map
     if (H > 0 || W > 0){
@@ -507,21 +498,19 @@ int main(int argc, char** argv) {
         const int total_height = H + padding_height*2;
 
         // Allocating memory
-        feature_map = (float**)malloc(total_height * sizeof(float*));
-        for (int i = 0; i < total_height; i++){
-            if (posix_memalign((void**)&feature_map[i], 64, total_width * sizeof(float)) != 0){
-                // TODO: Handle error
-            }
-            for (int j = 0; j < total_width; j++){
-                feature_map[i][j] = 0.0f;
-            }
+        if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){
+            // TODO: Handle error
         }
+        for (int i = 0; i < total_width * total_height; i++){
+            feature_map[i] = 0.0f;
+        }
+        
 
         generate_data(total_height, total_width, &feature_map);
 
         // If wanting to save inputs, write to feature file
         if (feature_file != NULL){
-            int status = write_data_to_file(feature_file, feature_map, NULL, H, W, padding_height, padding_width);
+            int status = write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width);
             if (status != 0){
                 // TODO: Handle when it can't write to feature file
             }
@@ -543,15 +532,11 @@ int main(int argc, char** argv) {
         const int total_height = H + padding_height*2;
 
         // Allocate memory for the feature map of the feature map.
-        // Allocating memory
-        feature_map = (float**)malloc(total_height * sizeof(float*));
-        for (int i = 0; i < total_height; i++){
-            if (posix_memalign((void**)&feature_map[i], 64, total_width * sizeof(float)) != 0){
-                // TODO: Handle error
-            }
-            for (int j = 0; j < total_width; j++){
-                feature_map[i][j] = 0.0f;
-            }
+        if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){
+            // TODO: Handle error
+        }
+        for (int i = 0; i < total_width * total_height; i++){
+            feature_map[i] = 0.0f;
         }
 
         // Extract Feature Map
@@ -561,7 +546,10 @@ int main(int argc, char** argv) {
                 // TODO: Handle when it can't extract data
             }
         }
+
+        
     }
+        
 
 
     
@@ -572,16 +560,18 @@ int main(int argc, char** argv) {
 
     if (output_file != NULL){
 
-        if (kernel[0] == NULL || feature_map[0] == NULL){
+        if (kernel == NULL || feature_map == NULL){
             printf("To generate an output, please provide all inputs.\n");
             return 1;
         }
 
         // Defining output pointers
-        float**         outputs         = NULL; // Used for serial convolution
-        float_array*    padded_outputs  = NULL; // Used for parallel convolution
+        float* outputs = NULL;      // Used for serial convolution
+        float_array padded_outputs; // Used for parallel convolution
 
-    
+        // if (posix_memalign((void**)&padded_outputs, 64, sizeof(float_array))){
+        //     // TODO: Handle error
+        // }    
         
 
         // Parallel Convolutions
@@ -592,15 +582,22 @@ int main(int argc, char** argv) {
             const int cache_padding_size = 64 - ((W * sizeof(float)) % 64);
 
             // Create a padded output for use within parallel regions. Prevents False Sharing.
-            padded_outputs = (float_array*)malloc(H * sizeof(float_array));
-            for (int i = 0; i < H; i++){
-                if (posix_memalign((void**)&padded_outputs[i].arr, 64, W * sizeof(float)) != 0){
-                    // TODO: Handle error
-                    printf("Error allocating memory for padded output.\n");
-                }
-                padded_outputs[i].padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
+            // padded_outputs = (float_array*)malloc(H * sizeof(float_array));
+            // for (int i = 0; i < H; i++){
+            //     if (posix_memalign((void**)&padded_outputs[i].arr, 64, W * sizeof(float)) != 0){
+            //         // TODO: Handle error
+            //         printf("Error allocating memory for padded output.\n");
+            //     }
+            //     padded_outputs[i].padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
+            // }
+
+            if (posix_memalign((void**)&padded_outputs.arr, 64, W * H * sizeof(float)) != 0){
+                // TODO: Handle error
+                printf("Error allocating memory for padded output.\n");
             }
-            
+            padded_outputs.padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
+
+
             // Timing begins here, because implementation only starts here.
             double start_time = omp_get_wtime();
 
@@ -608,16 +605,18 @@ int main(int argc, char** argv) {
             if (status != 0) {
                 // TODO: Handle when can't perform convolutions
             }
-            
+
             if (benchmark_mode == 0) printf("Parallel Time: %f\n", (omp_get_wtime() - start_time));
             
         // Serial Convolutions
         } else {
 
-            // Allocating memory
-            outputs = (float**)malloc(H * sizeof(float*));
-            for (int i = 0; i < H; i++){
-                outputs[i] = (float*)calloc(W, sizeof(float));
+            if (posix_memalign((void**)&outputs, 64, W * H * sizeof(float)) != 0){
+                // TODO: Handle error
+                printf("Error allocating memory for outputs.\n");
+            }
+            for (int i = 0; i < W * H; i++){
+                outputs[i] = 0.0f;
             }
 
 
@@ -654,6 +653,6 @@ int main(int argc, char** argv) {
     double file_time_taken = (file_end_time - file_start_time);
     //if (benchmark_mode == 0) printf("Total Time:    %f\n", file_time_taken);
 
-    //} // TODO: remove this before submission, this is just for testing many iterations.
+    } // TODO: remove this before submission, this is just for testing many iterations.
     return 0;
 }
