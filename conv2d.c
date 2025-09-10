@@ -11,6 +11,7 @@ character. */
 
 #define max(a,b) (((a) > (b)) ? (a) : (b))
 #define min(a,b) (((a) < (b)) ? (a) : (b))
+#define IDX(row, col, stride) ((row) * (stride) + (col))
 
 /*
 ~~~~~~~~~ IMPORTANT NOTES (for report + meetings) ~~~~~~~~~
@@ -23,11 +24,17 @@ character. */
 
 - Need to make sure we optimise for these things: 
     1. High cache-locality,
+        - Don't use 2d arrays, use 1d arrays with calculated offsets instead.
     2. Avoiding false sharing,
     3. Avoiding race conditions,
     4. Avoiding redundant calculations,
     5. Avoiding unnecessary memory allocations,
 */
+
+typedef struct {
+    float* arr;
+    char* padding;
+} float_array;
 
 /*
 * Extracts the dimensions from a file.
@@ -60,7 +67,6 @@ int extract_dimensions(char* filepath, int* height, int* width) {
 
     return 0;
 }
-
 
 /* 
 * Reads an input file and extracts data into an output. 
@@ -117,7 +123,6 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
     return 0;
 }
 
-
 /* 
 * Performs serial 2D discrete convolutions. 
 * @param f             Pointer to the Feature Map.
@@ -171,9 +176,9 @@ int conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, in
 * @param h_padding    Height of the padding in the Feature Map.
 * @param output       Pointer to the location where outputs are stored.
 */
-int parallel_conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, int h_padding, float** output){
+int parallel_conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_padding, int h_padding, float_array* padded_output){
 
-    const int total_height = H + h_padding;
+    const int total_height = H + h_padding; // While the actual total_height = (H + h_padding * 2), we subtract one now to avoid doing it every loop
     const int total_width = W + w_padding;
 
     // dimensions for convolution window
@@ -184,43 +189,35 @@ int parallel_conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_pa
     const int M_offset = kH % 2 == 0 ? 1 : 0;
     const int N_offset = kW % 2 == 0 ? 1 : 0;
 
-    float** temp_output;
-    temp_output = (float**)malloc(H * sizeof(float*));
-    for (int i = 0; i < H; i++){
-        temp_output[i] = (float*)calloc(W, sizeof(float));
-    }
+    // Each thread is assigned a different row
+    const int chunk = (total_width - w_padding);
 
-    // TODO: maybe we want to do reduction here idk
-    #pragma omp parallel for collapse(2) schedule(guided) firstprivate(temp_output, f, g, H, W, kH, kW, w_padding, h_padding, total_height, total_width, M, N, M_offset, N_offset)
-    for (int n = h_padding; n < total_height; n++){       // feature : Iterate over Rows
-        for (int k = w_padding; k < total_width; k++){    // feature : Iterate over columns
+    #pragma omp parallel for collapse(2) schedule(dynamic, chunk) firstprivate(f, g, H, W, kH, kW, w_padding, h_padding, total_height, total_width, M, N, M_offset, N_offset)
+    for (int n = h_padding; n < total_height; n++){
+        for (int k = w_padding; k < total_width; k++){
             float result = 0.0f;
-            #pragma omp simd reduction(+:result)
-            for (int i = -M; i <= M - M_offset; i++){               // kernel : Iterate over Rows
-                for (int j = -N; j <= N - N_offset; j++){           // kernel : Iterate over columns
-                    const int col = n + i;
-                    const int row = k + j;
 
-                    result += f[col][row] * g[i + M][j + N];
+            #pragma omp simd collapse(2)
+            for (int j = -N; j <= N - N_offset; j++){
+                for (int i = -M; i <= M - M_offset; i++){
+                    result += f[n + i][k + j] * g[i + M][j + N];
                 }
             }
-            output[n - h_padding][k - w_padding] = result;
-        } 
+            padded_output[n - h_padding].arr[k - w_padding] = result;
+        }
     }
-
-    free(temp_output);
     return 0;
 }
 
-
 /*
 Writes outputs to a file.
-@param filepath     The filepath of where to find/put the output file.
-@param outputs      The 2d convolutions outputs. This is what is written to the file.
-@param h_dimension  The height of the outputs. Should be the same as the feature map.
-@param w_dimension  The width of the outputs. Should be the same as the feature map.
+@param filepath         The filepath of where to find/put the output file.
+@param outputs          A 2d array of float32s. This is what is written to the file.
+@param padded_outputs   A padded 2d array of float32s. This is written to the file, instead of `outputs`, when outputting data from a parallel convolution.
+@param h_dimension      The height of the outputs. Should be the same as the feature map.
+@param w_dimension      The width of the outputs. Should be the same as the feature map.
 */
-int write_data_to_file(char* filepath, float** outputs, int h_dimension, int w_dimension, int h_padding, int w_padding){
+int write_data_to_file(char* filepath, float** outputs, float_array* padded_outputs, int h_dimension, int w_dimension, int h_padding, int w_padding){
     if (filepath == NULL){ return 1; }
     FILE* file_ptr = fopen(filepath, "w");
     if (file_ptr == NULL){ return 1; }
@@ -236,7 +233,14 @@ int write_data_to_file(char* filepath, float** outputs, int h_dimension, int w_d
     
     for (int i = h_padding; i < h_dimension + h_padding; i++){
         for (int j = w_padding; j < w_dimension + w_padding; j++){
-            fprintf(file_ptr, "%.3f ", outputs[i-h_padding][j-w_padding]);
+
+            // Depending if paralleism is enabled or not, print the outputs
+            if (outputs != NULL){
+                fprintf(file_ptr, "%.3f ", outputs[i-h_padding][j-w_padding]);
+            } else if (padded_outputs != NULL){
+                fprintf(file_ptr, "%.3f ", padded_outputs[i-h_padding].arr[j-w_padding]);
+            } else { return 1; }
+            
         }
         fprintf(file_ptr, "\n");
     }
@@ -246,7 +250,6 @@ int write_data_to_file(char* filepath, float** outputs, int h_dimension, int w_d
     return 0;
 
 }
-
 
 // TODO: Delete. This is for debugging only.
 void print2df(char* msg, float** arr, int size_x, int size_y){
@@ -258,7 +261,6 @@ void print2df(char* msg, float** arr, int size_x, int size_y){
         printf("\n");
     }
 }
-
 
 /*
 Generates a 2d array of random floats.
@@ -274,71 +276,67 @@ int generate_data(int height, int width, float** *output){
         (*output)[i] = (float*)calloc(width, sizeof(float));
     }
 
-    // Seed
-    srand(time(0));
+    // Make a new random seed. This stops f from being the same as g when the code runs too fast.
+    srand(rand());
     
     for (int i=0; i<height; i++){
         for (int j=0; j<width; j++){
             (*output)[i][j] = (float)rand() / (float)RAND_MAX;
         }
     }
-    
     return 0;
-}
-
-/*
-TODO: Delete this. For debugging only.
-Verbose printf. This is used as a debug print, to give verbose updates as the program executes.
-*/
-void v_printf(char* msg, int verbose_mode){
-    if (verbose_mode == 0) printf("%s", msg);
 }
 
 
 // Just a simple test to see if parallelisation is working
 void parallel_testing(float** numbers, int height, int width, int threads){
-    printf("\n");
+    
     omp_set_num_threads(threads);
     printf("Threads:        %d\n", threads);
-    
-    // MEMORY HEAVY
     float result = 0.0f;
-    
-    #pragma omp parallel for collapse(2) reduction(+:result) schedule(guided) firstprivate(numbers)
+
+    printf("\nNow doing single loop!\n");
+    int chunk = 4;
+    #pragma omp parallel for reduction(+:result) schedule(dynamic, chunk)
+    for (int i = 0; i < height; i++){
+        result += numbers[i][0];
+        if (omp_get_thread_num() == 0 || 1){
+            printf("Thread: %d,   Iteration: %d\n", omp_get_thread_num(), i);
+        }
+    }
+    return;
+    printf("\nNow doing Nested!\n");
+
+    result = 0;
+    chunk = 100;
+    #pragma omp parallel for reduction(+:result) collapse(2) schedule(dynamic, chunk)
     for (int i = 0; i < height; i++){
         for (int j = 0; j < width; j++){
             result += numbers[i][j];
+            int kH = 3;
+
+            for (int k = 0; k < kH; k++){
+                for (int l = 0; l < kH; l++){
+                    if (omp_get_thread_num() == 0){
+                        printf("[%d][%d],   [%d][%d],   Iteration: %d\n", i, j, k, l, l + k*3 + j*9 + i*90);
+                    }
+                }
+            }
+            
         }
     }
-    result = 0.0f;
-
-    clock_t start_time = clock();
-
-    #pragma omp parallel for collapse(2) reduction(+:result) schedule(guided) firstprivate(numbers)
-    for (int i = 0; i < height; i++){
-        for (int j = 0; j < width; j++){
-            result += numbers[i][j] * numbers[i][j] * numbers[i][j] * numbers[i][j];
-        }
-    } 
-    printf("Compute Time:   %f\n", (double)(clock() - start_time) / CLOCKS_PER_SEC);
-
-    // COMPUTATION HEAVY
-    result = 0.0f;
-    start_time = clock();
-
-    #pragma omp parallel for collapse(2) reduction(+:result) schedule(guided) firstprivate(numbers)
-    for (int i = 0; i < height; i++){
-        for (int j = 0; j < width; j++){
-            result +=numbers[i][j];
-        }
-    } 
-    printf("Memory Time:    %f\n", (double)(clock() - start_time) / CLOCKS_PER_SEC);
 }
 
 
 
 int main(int argc, char** argv) {
     
+    omp_set_num_threads(4); // TODO: Maybe make this a flag?
+    omp_set_nested(1); // Allow nested parallelism
+
+    // Seed for random generation later
+    srand(time(0));
+
     double file_start_time = omp_get_wtime();
 
     // Initialising variables for future use
@@ -354,7 +352,7 @@ int main(int argc, char** argv) {
     // DEBUG FLAGS
     int benchmark_mode = 1;    // -b ... 1=false, 0=true
     int verbose_mode = 1;      // -v
-    int parallel = 1;          // -p
+    int parallel_mode = 1;          // -p
 
     // Extract arguments into their variables
     for (int i = 1; i < argc; i++) {
@@ -399,13 +397,13 @@ int main(int argc, char** argv) {
             continue;
         }
         if (strcmp(argv[i], "-p") == 0) {
-            parallel = 0;
+            parallel_mode = 0;
             continue;
         }
     }
 
-    omp_set_num_threads(4); // TODO: Maybe make this a flag?
-
+    
+    
     /* 
     TODO: Error catching for incorrect flag usage
         
@@ -423,15 +421,17 @@ int main(int argc, char** argv) {
         - Compile with `-Wall -Werror` flags, to catch all potential issues. Fix them all, no exceptions.
     */
 
+    // TODO: remove this before submission, this is just for testing
+    //for (int iteration = 0; iteration < 15; iteration++){
+
     // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
 
     // Check if we need to generate our own kernel
     
-    float** kernel;
+    float** kernel = NULL;
 
     // Generate Kernel
     if (kH > 0 || kW > 0){
-        v_printf("Generating Kernel...      ", verbose_mode);
 
         // Allows users to specify only 1 dimension, and prevents them from inputting negative numbers
         kH = max(kH, 1);
@@ -440,24 +440,25 @@ int main(int argc, char** argv) {
         // Allocating memory
         kernel = (float**)malloc(kH * sizeof(float*));
         for (int i = 0; i < kH; i++){
-            kernel[i] = (float*)calloc(kW, sizeof(float));
+            if (posix_memalign((void**)&kernel[i], 64, W * sizeof(float)) != 0){
+                // TODO: Handle error
+            }
+            //kernel[i] = (float*)calloc(kW, sizeof(float));
         }
 
         generate_data(kH, kW, &kernel);
 
         // If wanting to save inputs, write to kernel file
         if (kernel_file != NULL){
-            int status = write_data_to_file(kernel_file, kernel, kH, kW, 0, 0);
+            int status = write_data_to_file(kernel_file, kernel, NULL, kH, kW, 0, 0);
             if (status != 0){
                 // TODO: Handle when it can't write to kernel
             }
         }
 
-        v_printf("Finished.\n", verbose_mode);
-
     // Extract Kernel
     } else {
-        v_printf("Extracting Kernel...      ", verbose_mode);
+
         // Extracting dimensions
         if (kernel_file != NULL){
             int status = extract_dimensions(kernel_file, &kH, &kW);
@@ -469,7 +470,10 @@ int main(int argc, char** argv) {
         // Allocating memory
         kernel = (float**)malloc(kH * sizeof(float*));
         for (int i = 0; i < kH; i++){
-            kernel[i] = (float*)calloc(kW, sizeof(float));
+            if (posix_memalign((void**)&kernel[i], 64, W * sizeof(float)) != 0){
+                // TODO: Handle error
+            }
+            //kernel[i] = (float*)calloc(kW, sizeof(float));
         }
 
         // Extracting data
@@ -480,7 +484,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        v_printf("Finished.\n", verbose_mode);
     }
 
     // This is the "same padding" that'll be added to the feature map.
@@ -491,12 +494,10 @@ int main(int argc, char** argv) {
     
     // ~~~~~~~~~~~~~~ FEATURE MAP ~~~~~~~~~~~~~~ // 
 
-    float** feature_map;
+    float** feature_map = NULL;
 
     // Generate Feature Map
     if (H > 0 || W > 0){
-
-        v_printf("Generating Feature Map...     ", verbose_mode);
 
         // Allows users to specify only 1 dimension, and prevents them from inputting negative numbers
         H = max(H, 1);
@@ -508,25 +509,28 @@ int main(int argc, char** argv) {
         // Allocating memory
         feature_map = (float**)malloc(total_height * sizeof(float*));
         for (int i = 0; i < total_height; i++){
-            feature_map[i] = (float*)calloc(total_width, sizeof(float)); // calloc sets all to zero, creating padding
+            if (posix_memalign((void**)&feature_map[i], 64, total_width * sizeof(float)) != 0){
+                // TODO: Handle error
+            }
+            for (int j = 0; j < total_width; j++){
+                feature_map[i][j] = 0.0f;
+            }
         }
 
         generate_data(total_height, total_width, &feature_map);
 
         // If wanting to save inputs, write to feature file
         if (feature_file != NULL){
-            int status = write_data_to_file(feature_file, feature_map, H, W, padding_height, padding_width);
+            int status = write_data_to_file(feature_file, feature_map, NULL, H, W, padding_height, padding_width);
             if (status != 0){
                 // TODO: Handle when it can't write to feature file
             }
         }
 
-        v_printf("Finished.\n", verbose_mode);
 
     // Extract Feature Map
     } else {
 
-        v_printf("Extracting Feature Map...     ", verbose_mode);
         // Extract dimensions of the feature map
         if (feature_file != NULL){
             int status = extract_dimensions(feature_file, &H, &W);
@@ -539,9 +543,15 @@ int main(int argc, char** argv) {
         const int total_height = H + padding_height*2;
 
         // Allocate memory for the feature map of the feature map.
+        // Allocating memory
         feature_map = (float**)malloc(total_height * sizeof(float*));
         for (int i = 0; i < total_height; i++){
-            feature_map[i] = (float*)calloc(total_width, sizeof(float)); // calloc sets all to zero, creating padding
+            if (posix_memalign((void**)&feature_map[i], 64, total_width * sizeof(float)) != 0){
+                // TODO: Handle error
+            }
+            for (int j = 0; j < total_width; j++){
+                feature_map[i][j] = 0.0f;
+            }
         }
 
         // Extract Feature Map
@@ -551,7 +561,6 @@ int main(int argc, char** argv) {
                 // TODO: Handle when it can't extract data
             }
         }
-        v_printf("Finished.\n", verbose_mode);
     }
 
 
@@ -563,69 +572,88 @@ int main(int argc, char** argv) {
 
     if (output_file != NULL){
 
-        v_printf("Creating Outputs...       ", verbose_mode);
-
         if (kernel[0] == NULL || feature_map[0] == NULL){
             printf("To generate an output, please provide all inputs.\n");
             return 1;
         }
 
-        // Allocating memory
-        float** outputs = (float**)malloc(H * sizeof(float*));
-        for (int i = 0; i < H; i++){
-            outputs[i] = (float*)calloc(W, sizeof(float));
-        }
+        // Defining output pointers
+        float**         outputs         = NULL; // Used for serial convolution
+        float_array*    padded_outputs  = NULL; // Used for parallel convolution
 
-        v_printf("Finished.\n", verbose_mode);
+    
         
-        v_printf("Performing Convolutions...        ", verbose_mode);
 
+        // Parallel Convolutions
+        if (parallel_mode == 0){
+            
+            // The size of the array padding. Used to prevent false sharing.
+            // Equal to the number of bytes left over in the cache line containing the final element in float array.
+            const int cache_padding_size = 64 - ((W * sizeof(float)) % 64);
 
+            // Create a padded output for use within parallel regions. Prevents False Sharing.
+            padded_outputs = (float_array*)malloc(H * sizeof(float_array));
+            for (int i = 0; i < H; i++){
+                if (posix_memalign((void**)&padded_outputs[i].arr, 64, W * sizeof(float)) != 0){
+                    // TODO: Handle error
+                    printf("Error allocating memory for padded output.\n");
+                }
+                padded_outputs[i].padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
+            }
+            
+            // Timing begins here, because implementation only starts here.
+            double start_time = omp_get_wtime();
 
-        // Timing begins here, because implementation only starts here.
-        double parallel_start_time = omp_get_wtime();
-
-        // Convolutions
-        if (parallel == 0){
-            int status = parallel_conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, outputs);
+            int status = parallel_conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, padded_outputs);
             if (status != 0) {
                 // TODO: Handle when can't perform convolutions
             }
+            
+            if (benchmark_mode == 0) printf("Parallel Time: %f\n", (omp_get_wtime() - start_time));
+            
+        // Serial Convolutions
         } else {
+
+            // Allocating memory
+            outputs = (float**)malloc(H * sizeof(float*));
+            for (int i = 0; i < H; i++){
+                outputs[i] = (float*)calloc(W, sizeof(float));
+            }
+
+
+            double start_time = omp_get_wtime();
+
             int status = conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, outputs);
             if (status != 0){
                 // TODO: Handle when can't perform convolutions
             }
-        }
-        v_printf("Finished.\n", verbose_mode);
-        
-        double parallel_end_time = omp_get_wtime();
-        double parallel_time_taken = (parallel_end_time - parallel_start_time);
 
-        if (benchmark_mode == 0) printf("Parallel Time: %f\n", parallel_time_taken);
+            if (benchmark_mode == 0) printf("Serial Time: %f\n", (omp_get_wtime() - start_time));
+        }
+        
+        
 
 
     // ~~~~~~~~~~~~~~ Write to Output ~~~~~~~~~~~~~~ //
 
-        v_printf("Writing Outputs To File...        ", verbose_mode);
 
-        int status = write_data_to_file(output_file, outputs, H, W, 0, 0);
+        int status = write_data_to_file(output_file, outputs, padded_outputs, H, W, 0, 0);
         if (status != 0){
             // TODO: Handle when can't write to output.
         }
 
         free(outputs);
 
-        v_printf("Finished.\n", verbose_mode);
     }
 
     free(feature_map);
     free(kernel);
 
-    v_printf("Finished!\n", verbose_mode);
 
     double file_end_time = omp_get_wtime();
     double file_time_taken = (file_end_time - file_start_time);
-    if (benchmark_mode == 0) printf("Total Time:    %f\n", file_time_taken);
+    //if (benchmark_mode == 0) printf("Total Time:    %f\n", file_time_taken);
+
+    //} // TODO: remove this before submission, this is just for testing many iterations.
     return 0;
 }
