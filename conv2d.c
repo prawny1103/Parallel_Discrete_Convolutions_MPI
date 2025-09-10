@@ -191,10 +191,11 @@ int parallel_conv2d(float** f, int H, int W, float** g, int kH, int kW, int w_pa
     }
 
     // TODO: maybe we want to do reduction here idk
-    #pragma omp parallel for collapse(2) firstprivate(temp_output, f, g, H, W, kH, kW, w_padding, h_padding, total_height, total_width, M, N, M_offset, N_offset)
+    #pragma omp parallel for collapse(2) schedule(guided) firstprivate(temp_output, f, g, H, W, kH, kW, w_padding, h_padding, total_height, total_width, M, N, M_offset, N_offset)
     for (int n = h_padding; n < total_height; n++){       // feature : Iterate over Rows
         for (int k = w_padding; k < total_width; k++){    // feature : Iterate over columns
             float result = 0.0f;
+            #pragma omp simd reduction(+:result)
             for (int i = -M; i <= M - M_offset; i++){               // kernel : Iterate over Rows
                 for (int j = -N; j <= N - N_offset; j++){           // kernel : Iterate over columns
                     const int col = n + i;
