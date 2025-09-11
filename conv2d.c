@@ -193,10 +193,8 @@ int parallel_conv2d(float* f, int H, int W, float* g, int kH, int kW, int w_padd
     const int M_offset = kH % 2 == 0 ? 1 : 0;
     const int N_offset = kW % 2 == 0 ? 1 : 0;
 
-    const int threads = omp_get_max_threads();
-
     // TODO: make this `default(none)` and add anything we need as `shared`
-    #pragma omp parallel for collapse(2) schedule(dynamic, W)
+    #pragma omp parallel for collapse(2) schedule(dynamic)
     for (int n = h_padding; n < total_height - h_padding; n++){         // H iterations
         for (int k = w_padding; k < total_width - w_padding; k++){      // W iterations
             float result = 0.0f;
@@ -301,7 +299,8 @@ int main(int argc, char** argv) {
     int benchmark_mode = 0;         // -b
     int multi_benchmark_mode = 9;   // -mb <max_iterations>
     int max_iterations = 1;             // Used by multi_benchmark_mode to run the code multiple times, getting an average.
-    int parallel_mode = 0;          // -p
+    int threads = 1;                // -t <threads>
+    
 
     // Extract arguments into their variables
     for (int i = 1; i < argc; i++) {
@@ -310,30 +309,37 @@ int main(int argc, char** argv) {
 
         // Check all flags
         if (strcmp(argv[i], "-H") == 0) {
-            H = atoi(argv[++i]);
+            if (i + 1 >= argc) { printf("Incorrect usage of -H flag. Please provide an input height.\n"); return 1; }
+            H = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 1;
             continue;
         }
         if (strcmp(argv[i], "-W") == 0) {
-            W = atoi(argv[++i]);
+            if (i + 1 >= argc) { printf("Incorrect usage of -W flag. Please provide an input width.\n"); return 1; }
+            W = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 1;
             continue;
         }
         if (strcmp(argv[i], "-kH") == 0) {
-            kH = atoi(argv[++i]);
+            if (i + 1 >= argc) { printf("Incorrect usage of -kH flag. Please provide a kernel height.\n"); return 1; }
+            kH = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 1;
             continue;
         }
         if (strcmp(argv[i], "-kW") == 0) {
-            kW = atoi(argv[++i]);
+            if (i + 1 >= argc) { printf("Incorrect usage of -kW flag. Please provide a kernel width.\n"); return 1; }
+            kW = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 1;
             continue;
         }
         if (strcmp(argv[i], "-f") == 0) {
+            if (i + 1 >= argc) { printf("Incorrect usage of -f flag. Please provide a filepath.\n"); return 1; }
             feature_file = argv[++i];
             continue;
         }
         if (strcmp(argv[i], "-g") == 0) {
+            if (i + 1 >= argc) { printf("Incorrect usage of -g flag. Please provide a filepath.\n"); return 1; }
             kernel_file = argv[++i];
             continue;
         }
         if (strcmp(argv[i], "-o") == 0) {
+            if (i + 1 >= argc) { printf("Incorrect usage of -o flag. Please provide a filepath.\n"); return 1; }
             output_file = argv[++i];
             continue;
         }
@@ -343,14 +349,25 @@ int main(int argc, char** argv) {
         }
         if (strcmp(argv[i], "-mb") == 0) {
             multi_benchmark_mode = 1;
-            max_iterations = atoi(argv[++i]);
+            if (i + 1 >= argc) { max_iterations = 15; continue; }
+            max_iterations = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 15;
             continue;
         }
-        if (strcmp(argv[i], "-p") == 0) {
-            parallel_mode = 1;
+        if (strcmp(argv[i], "-t") == 0) {
+            if (i + 1 >= argc) { printf("Incorrect usage of -t flag. Please provide a number of threads.\n"); return 1; }
+            threads = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 1;
+            omp_set_num_threads(threads);
             continue;
         }
     }
+
+    if (benchmark_mode) { 
+        if (threads > 1){
+            printf("Beginning Parallel Convolutions with %d threads...\n", threads);
+        } else {
+            printf("Beginning Serial Convolutions...\n");
+        }
+    };
 
     
     
@@ -507,7 +524,7 @@ int main(int argc, char** argv) {
         
 
         // Parallel Convolutions
-        if (parallel_mode == 1){
+        if (threads > 1){
             
             // The size of the array padding. Used to prevent false sharing.
             // Equal to the number of bytes left over in the cache line containing the final element in float array.
@@ -528,7 +545,7 @@ int main(int argc, char** argv) {
                 // TODO: Handle when can't perform convolutions
             }
 
-            if (benchmark_mode == 1) { printf("Parallel Time:   %f\n", (omp_get_wtime() - start_time));}
+            if (benchmark_mode == 1) { printf("%f\n", (omp_get_wtime() - start_time));}
             if (multi_benchmark_mode == 1) { average_time += (omp_get_wtime() - start_time); }
             
         // Serial Convolutions
@@ -546,7 +563,7 @@ int main(int argc, char** argv) {
             }
 
             // Benchmarking
-            if (benchmark_mode == 1) {printf("Serial Time:  %f\n", (omp_get_wtime() - start_time)); }
+            if (benchmark_mode == 1) {printf("%f\n", (omp_get_wtime() - start_time)); }
             if (multi_benchmark_mode == 1) { average_time += (omp_get_wtime() - start_time); }
         }
         
