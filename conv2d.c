@@ -297,7 +297,7 @@ int main(int argc, char** argv) {
 
     // DEBUG FLAGS
     int benchmark_mode = 0;         // -b
-    int multi_benchmark_mode = 9;   // -mb <max_iterations>
+    int multi_benchmark_mode = 0;   // -mb <max_iterations>
     int max_iterations = 1;             // Used by multi_benchmark_mode to run the code multiple times, getting an average.
     int threads = 1;                // -t <threads>
     
@@ -390,6 +390,8 @@ int main(int argc, char** argv) {
     // TODO: remove this before submission, this is just for testing
     double average_time = 0.0f;
     for (int iteration = 0; iteration < max_iterations; iteration++){
+
+    if (multi_benchmark_mode && (feature_file || kernel_file)) { printf("Do not input a file while running multi-benchmark mode.\n"); return 1; }
 
     // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
 
