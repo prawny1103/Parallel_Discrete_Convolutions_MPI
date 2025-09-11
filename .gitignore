@@ -40,3 +40,8 @@ ipch/
 
 # build file
 conv2d
+
+# testing files
+*.txt
+*.py
+*.slurm
