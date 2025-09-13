@@ -168,10 +168,9 @@ int parallel_conv2d(float* f, int H, int W, float* g, int kH, int kW, int w_padd
     const int M = (kH - 1) / 2;
     const int N = (kW - 1) / 2;
 
-    // TODO: make this `default(none)` and add anything we need as `shared`
-    #pragma omp parallel for collapse(2) schedule(dynamic, W)
-    for (int n = h_padding; n < total_height - h_padding; n++){         // H iterations
-        for (int k = w_padding; k < total_width - w_padding; k++){      // W iterations
+    #pragma omp parallel for collapse(2) schedule(dynamic, total_width)
+    for (int n = h_padding; n < total_height - h_padding; n++){
+        for (int k = w_padding; k < total_width - w_padding; k++){
             float result = 0.0f;
 
             #pragma omp simd collapse(2) reduction(+:result)
