@@ -1,3 +1,6 @@
+// Name: Liam Hearder       Student Number: 23074422
+// Name: Pranav Menon       Student Number: 24069351
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
