@@ -23,9 +23,9 @@ ___
 * -f `<filepath>`: used to link the file in which the feature map is stored 
 * -g `<filepath>`: used to link the file in which the kernel is stored
 * -o `<filepath>`: used to provide a file in which the output will be stored
-* -b: enables the benchmarking mode, which measures and outputs the performance of the program. This is a debugging flag and as such, is not required.
-* -mb `<int>`: used to enable “multi-benchmarking mode” which causes the code to execute everything a number of times equal to “iterations”, then prints an average timing at the end. This is a debugging flag and as such, is not required.
 * -t `<int>`: enables parallel calculation of convolutions, without which the convolutions will be calculated serially. You can optionally provide a number of threads which the application will be able to use.
+* -mb `<int>`: used to enable “multi-benchmarking mode” which causes the code to execute everything a number of times equal to “iterations”, then prints an average timing at the end. This is a debugging flag and as such, is not required.
+* -b: enables the benchmarking mode, which measures and outputs the performance of the program. This is a debugging flag and as such, is not required.
 ___
 ### Sample usage:
 
