@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -fopenmp -Wall -Werror
 
 SOURCE = conv2d.c
-TARGET = conv2d.exe
+TARGET = conv2d
 
 all: $(TARGET)
 
