@@ -12,10 +12,14 @@ So, 3 floats, each looks like "X.XXX" which is 5 chars, but then all have a spac
 character. */
 #define FLOAT_STRING_LENGTH 6
 
+// Macros for max, min,
 #define max(a,b) (((a) > (b)) ? (a) : (b))
 #define min(a,b) (((a) < (b)) ? (a) : (b))
-#define IDX(row, col, stride) ((row) * (stride) + (col))
 
+// Macro for converting 2D indices to 1D index
+#define IDX(row, col, step) ((row) * (step) + (col))
+
+// A struct to hold a float array and its padding, to prevent false sharing.
 typedef struct {
     float* arr;
     char* padding;
