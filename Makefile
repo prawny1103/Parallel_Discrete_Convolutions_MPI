@@ -4,14 +4,14 @@ CFLAGS = -fopenmp -Wall -Werror
 SOURCE = conv2d.c
 TARGET = conv2d
 
-all: $(TARGET)
+all:	$(TARGET)
 
-$(TARGET): $(SOURCE)
-    $(CC) $(CFLAGS) $(SOURCE) -o $(TARGET)
+$(TARGET):	$(SOURCE) 
+	$(CC) $(CFLAGS) $(SOURCE) -o $(TARGET)
 
 clean:
-    rm -f $(TARGET)
+	rm -f $(TARGET)
 
-rebuild: clean all
+rebuild:	clean all
 
-.PHONY: all clean rebuild
+.PHONY:	all clean rebuild
