@@ -135,6 +135,7 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 * @param W            Width of the Feature Map.
 * @param g            Pointer to the Kernel.
 * @param kH           Height of the Kernel.
+* @param kW           Width of the Kernel.
 * @param w_padding    Width of the padding in the Feature Map.
 * @param h_padding    Height of the padding in the Feature Map.
 * @param output       Pointer to the location where outputs are stored.
@@ -209,7 +210,7 @@ int parallel_conv2d(float* f, int H, int W, float* g, int kH, int kW, int w_padd
 /*
 Writes outputs to a file.
 @param filepath         The filepath of where to find/put the output file.
-@param outputs          A 2d array of float32s. This is what is written to the file.
+@param outputs          A 2d array of float32s. This is what is written to the file for serial convolutions.
 @param padded_outputs   A padded 2d array of float32s. This is written to the file, instead of `outputs`, when outputting data from a parallel convolution.
 @param h_dimension      The height of the outputs. Should be the same as the feature map.
 @param w_dimension      The width of the outputs. Should be the same as the feature map.
@@ -605,6 +606,6 @@ int main(int argc, char** argv) {
     } // End of loop for multi_benchmark_mode
 
     if (multi_benchmark_mode == 1) {printf("Average Time:   %f\n", average_time/max_iterations);}
-    
+
     return 0;
 }
