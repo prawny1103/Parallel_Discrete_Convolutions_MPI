@@ -13,16 +13,16 @@ There are no specific requirements for compiling our code, other than enabling r
 gcc -fopenmp -Wall -Werror  conv2d.c -o conv2d
 ```
 
-Alternatively, you could simply use the `make` command which does the same thing
+Alternatively, simply use the `make` command.
 ___ 
 ### Options:
-* -H `<int>` : used to set the integer height of the feature map to be generated
-* -W `<int>`: used to set the integer width of the feature map to be generated
-* -kH `<int>`: used to set the integer height of the kernel to be generated
-* -kW `<int>`: used to the integer width of the kernel to be generated
-* -f `<filepath>`: used to link the file in which the feature map is stored 
-* -g `<filepath>`: used to link the file in which the kernel is stored
-* -o `<filepath>`: used to provide a file in which the output will be stored
+* -H `<int>` : The integer height of the feature map to be generated.
+* -W `<int>`: The integer width of the feature map to be generated.
+* -kH `<int>`: The integer height of the kernel to be generated.
+* -kW `<int>`: The integer width of the kernel to be generated.
+* -f `<filepath>`: used to link the file in which the feature map is stored. If a feature map is generated, the generated values will be saved to this file.
+* -g `<filepath>`: used to link the file in which the kernel is stored. If a kernel is generated, the generated values will be saved to this file.
+* -o `<filepath>`: used to provide a file in which the output will be stored.
 * -t `<int>`: enables parallel calculation of convolutions, without which the convolutions will be calculated serially. You can optionally provide a number of threads which the application will be able to use.
 * -mb `<int>`: used to enable “multi-benchmarking mode” which causes the code to execute everything a number of times equal to “iterations”, then prints an average timing at the end. This is a debugging flag and as such, is not required.
 * -b: enables the benchmarking mode, which measures and outputs the performance of the program. This is a debugging flag and as such, is not required.

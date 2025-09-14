@@ -1,6 +1,19 @@
 // Name: Liam Hearder       Student Number: 23074422
 // Name: Pranav Menon       Student Number: 24069351
 
+
+// ~~~~~~~~~~~~~~ CONTENTS ~~~~~~~~~~~~~~ //
+// 1. Includes and Defines
+// 2. extract_dimensions()
+// 3. extract_data()
+// 4. conv2d()
+// 5. parallel_conv2d()
+// 6. write_data_to_file()
+// 7. generate_data()
+// 8. main()
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -258,13 +271,25 @@ int generate_data(int height, int width, float* *output){
 
 int main(int argc, char** argv) {
     
+    // ~~~~~~~~~~~~~~~ MAIN CONTENTS ~~~~~~~~~~~~~~ //
+    // 1. Argument Extraction
+    // 2. Error Handling
+    // 3. Kernel Generation / Extraction
+    // 4. Feature Map Generation / Extraction
+    // 5. Serial Convolutions / Parallel Convolutions
+    // 6. Write to Output
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+
+
+    // ~~~~~~~~~~~~~~~ 1. Argument Extraction ~~~~~~~~~~~~~~ //
+
+
     omp_set_nested(1); // Allow nested parallelism for SIMD
 
     // Seed for random generation later
     srand(time(0));
 
     // Initialising variables for future use
-    // TODO: we should align all of these, to avoid False Sharing
     int H = 0;                      // -H <int>
     int W = 0;                      // -W <int>
     int kH = 0;                     // -kH <int>
@@ -339,6 +364,9 @@ int main(int argc, char** argv) {
         }
     }
 
+
+    // ~~~~~~~~~~~~~~~ 2. Error Handling ~~~~~~~~~~~~~~ //
+
     if (benchmark_mode) { 
         if (threads > 1){
             printf("Beginning Parallel Convolutions with %d threads...\n", threads);
@@ -362,33 +390,15 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    
-    /* 
-    TODO: Error catching for incorrect flag usage
-        
-        Examples: 
-        1. No flags provided, 
-        2. Generating array but provided only height not width, 
-        3. Not generating and provided feature but no kernel
-        4. Provided output, but generated/provided no input
-        5. Incompatible datatype passed through for that flag.
-
-    
-    TODO:
-        - Test to see if weirdly shaped kernels also work, e.g., 5x3, 2x1, 1x1, 1x9, 50x1, 25x10, etc
-        - Compile with `-Wall -Werror` flags, to catch all potential issues. Fix them all, no exceptions.
-    */
-
-    // TODO: remove this before submission, this is just for testing
     double average_time = 0.0f;
     for (int iteration = 0; iteration < max_iterations; iteration++){
 
     if (multi_benchmark_mode && (feature_file || kernel_file)) { printf("Do not input a file while running multi-benchmark mode.\n"); return 1; }
 
-    // ~~~~~~~~~~~~~~ KERNEL ~~~~~~~~~~~~~~ // 
 
-    // Check if we need to generate our own kernel
-    
+
+    // ~~~~~~~~~~~~~~ 3. Kernel Generation / Extraction ~~~~~~~~~~~~~~ //
+
     float* kernel = NULL;
 
     // Generate Kernel
@@ -400,7 +410,8 @@ int main(int argc, char** argv) {
 
         // Allocating memory
         if (posix_memalign((void**)&kernel, 64, kW * kH * sizeof(float)) != 0){
-            // TODO: Handle error
+            printf("Error allocating memory for kernel.\n");
+            return 1;
         }
 
         generate_data(kH, kW, &kernel);
@@ -409,7 +420,8 @@ int main(int argc, char** argv) {
         if (kernel_file != NULL){
             int status = write_data_to_file(kernel_file, kernel, (float_array){0}, kH, kW, 0, 0);
             if (status != 0){
-                // TODO: Handle when it can't write to kernel
+                printf("Error writing kernel to file.\n");
+                return 1;
             }
         }
 
@@ -418,17 +430,20 @@ int main(int argc, char** argv) {
 
         // Extracting dimensions
         if (extract_dimensions(kernel_file, &kH, &kW) != 0){ 
-            // TODO: Handle when it can't extract file dimensions
+            printf("Error extracting kernel dimensions from file.\n");
+            return 1;
         }
         
         // Allocating memory
         if (posix_memalign((void**)&kernel, 64, kW * kH * sizeof(float)) != 0){
-            // TODO: Handle error
+            printf("Error allocating memory for kernel.\n");
+            return 1;
         }
 
         // Extracting data
         if (extract_data(kernel_file, kW, kH, 0, 0, &kernel) != 0){
-            // TODO: Handle when can't extract kernel
+            printf("Error extracting kernel data from file.\n");
+            return 1;
         }
     }
 
@@ -438,7 +453,7 @@ int main(int argc, char** argv) {
 
     
     
-    // ~~~~~~~~~~~~~~ FEATURE MAP ~~~~~~~~~~~~~~ // 
+    // ~~~~~~~~~~~~~~ 4. Feature Map Generation / Extraction ~~~~~~~~~~~~~~ //
 
     float* feature_map = NULL;
 
@@ -454,7 +469,8 @@ int main(int argc, char** argv) {
 
         // Allocating memory
         if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){
-            // TODO: Handle error
+            printf("Error allocating memory for feature map.\n");
+            return 1;
         }
 
         // Add zeroes as padding
@@ -468,7 +484,8 @@ int main(int argc, char** argv) {
         // If wanting to save inputs, write to feature file
         if (feature_file != NULL){
             if (write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width) != 0){
-                // TODO: Handle when it can't write to feature file
+                printf("Error writing feature map to file.\n");
+                return 1;
             }
         }
 
@@ -478,7 +495,8 @@ int main(int argc, char** argv) {
 
         // Extract dimensions of the feature map
         if (extract_dimensions(feature_file, &H, &W) != 0){ 
-            // TODO: Handle when it can't extract file dimensions
+            printf("Error extracting feature map dimensions from file.\n");
+            return 1;
         }
 
         const int total_width = W + padding_width*2;
@@ -486,7 +504,8 @@ int main(int argc, char** argv) {
 
         // Allocate memory for the feature map of the feature map.
         if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){
-            // TODO: Handle error
+            printf("Error allocating memory for feature map.\n");
+            return 1;
         }
         
         // Add zeroes as padding
@@ -496,13 +515,14 @@ int main(int argc, char** argv) {
 
         // Extract Feature Map
         if (extract_data(feature_file, W, H, padding_width, padding_height, &feature_map) != 0){
-            // TODO: Handle when it can't extract data
+            printf("Error extracting feature map data from file.\n");
+            return 1;
         }        
     }
         
 
     
-    // ~~~~~~~~~~~~~~ conv2d() ~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~ 5. Serial Convolutions / Parallel Convolutions ~~~~~~~~~~~~~~ //
     
     // Check if we have all the inputs we need to perform convolutions
     if (kernel == NULL || feature_map == NULL){
@@ -523,7 +543,6 @@ int main(int argc, char** argv) {
         const int cache_padding_size = 64 - ((W * sizeof(float)) % 64);
 
         if (posix_memalign((void**)&padded_outputs.arr, 64, W * H * sizeof(float)) != 0){
-            // TODO: Handle error
             printf("Error allocating memory for padded output.\n");
             return 1;
         }
@@ -534,7 +553,8 @@ int main(int argc, char** argv) {
         double start_time = omp_get_wtime();
 
         if (parallel_conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, padded_outputs) != 0) {
-            // TODO: Handle when can't perform convolutions
+            printf("Error performing parallel convolutions.\n");
+            return 1;
         }
 
         if (benchmark_mode == 1) { printf("%f\n", (omp_get_wtime() - start_time));}
@@ -544,14 +564,15 @@ int main(int argc, char** argv) {
     } else {
 
         if (posix_memalign((void**)&outputs, 64, W * H * sizeof(float)) != 0){
-            // TODO: Handle error
             printf("Error allocating memory for outputs.\n");
+            return 1;
         }
 
         double start_time = omp_get_wtime();
 
         if (conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, outputs) != 0){
-            // TODO: Handle when can't perform convolutions
+            printf("Error performing serial convolutions.\n");
+            return 1;
         }
 
         // Benchmarking
@@ -562,12 +583,13 @@ int main(int argc, char** argv) {
         
 
 
-    // ~~~~~~~~~~~~~~ Write to Output ~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~ 6. Write to Output ~~~~~~~~~~~~~~ //
 
     if (output_file != NULL){
 
         if (write_data_to_file(output_file, outputs, padded_outputs, H, W, 0, 0) != 0){
-            // TODO: Handle when can't write to output.
+            printf("Error writing outputs to file.\n");
+            return 1;
         }
 
         // Free any remaining memory
@@ -583,5 +605,6 @@ int main(int argc, char** argv) {
     } // End of loop for multi_benchmark_mode
 
     if (multi_benchmark_mode == 1) {printf("Average Time:   %f\n", average_time/max_iterations);}
+    
     return 0;
 }
