@@ -576,7 +576,7 @@ int main(int argc, char** argv) {
         // Timing begins here, because implementation only starts here.
         double start_time = omp_get_wtime();
 
-        if (parallel_conv2d(feature_map, H, W, kernel, kH, kW, sH, sW, padding_width, padding_height, padded_outputs) != 0) {
+        if (parallel_conv2d_stride(feature_map, H, W, kernel, kH, kW, sH, sW, padding_width, padding_height, padded_outputs) != 0) {
             printf("Error performing parallel convolutions.\n");
             return 1;
         }
