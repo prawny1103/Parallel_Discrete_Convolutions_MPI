@@ -182,22 +182,25 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
 * @param g              Pointer to the Kernel.
 * @param kH             Height of the Kernel.
 * @param kW             Width of the Kernel.
+* @param sH             Stride height.
+* @param sW             Stride width.
 * @param w_padding      Width of the padding in the Feature Map.
 * @param h_padding      Height of the padding in the Feature Map.
 * @param padded_output  Location where outputs are stored.
 */
-int parallel_conv2d(float* f, int H, int W, float* g, int kH, int kW, int w_padding, int h_padding, float_array padded_output){
+int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, float_array padded_output){
 
     const int total_height = H + h_padding*2;
     const int total_width = W + w_padding*2;
+    const int total_strides_width = TOTAL_STRIDES(W, sW);
 
     // dimensions for convolution window
     const int M = (kH - 1) / 2;
     const int N = (kW - 1) / 2;
 
     #pragma omp parallel for collapse(2) schedule(dynamic, total_width)
-    for (int n = h_padding; n < total_height - h_padding; n++){
-        for (int k = w_padding; k < total_width - w_padding; k++){
+    for (int n = h_padding; n < total_height - h_padding; n=n+sH){
+        for (int k = w_padding; k < total_width - w_padding; k=k+sW){
             float result = 0.0f;
 
             #pragma omp simd collapse(2) reduction(+:result)
@@ -206,7 +209,7 @@ int parallel_conv2d(float* f, int H, int W, float* g, int kH, int kW, int w_padd
                     result += f[IDX(n + i - M, k + j - N, total_width)] * g[IDX(i, j, kW)];
                 }
             }
-            padded_output.arr[IDX(n - h_padding, k - w_padding, W)] = result;
+            padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = result;
         }
     }
     return 0;
@@ -564,7 +567,7 @@ int main(int argc, char** argv) {
         // Equal to the number of bytes left over in the cache line containing the final element in float array.
         const int cache_padding_size = 64 - ((W * sizeof(float)) % 64);
 
-        if (posix_memalign((void**)&padded_outputs.arr, 64, W * H * sizeof(float)) != 0){
+        if (posix_memalign((void**)&padded_outputs.arr, 64, total_strides_width * total_strides_height * sizeof(float)) != 0){
             printf("Error allocating memory for padded output.\n");
             return 1;
         }
@@ -573,7 +576,7 @@ int main(int argc, char** argv) {
         // Timing begins here, because implementation only starts here.
         double start_time = omp_get_wtime();
 
-        if (parallel_conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, padded_outputs) != 0) {
+        if (parallel_conv2d(feature_map, H, W, kernel, kH, kW, sH, sW, padding_width, padding_height, padded_outputs) != 0) {
             printf("Error performing parallel convolutions.\n");
             return 1;
         }
