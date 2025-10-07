@@ -32,6 +32,9 @@ character. */
 // Macro for converting 2D indices to 1D index
 #define IDX(row, col, step) ((row) * (step) + (col))
 
+// Macro for finding the total number of strides in a row or column
+#define TOTAL_STRIDES(size, stride) ((size>0) ? (((size-1)/stride) + 1) : (0))
+
 // A struct to hold a float array and its padding, to prevent false sharing.
 typedef struct {
     float* arr;
@@ -136,22 +139,25 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 * @param g            Pointer to the Kernel.
 * @param kH           Height of the Kernel.
 * @param kW           Width of the Kernel.
+* @param sH           Stride height.
+* @param sW           Stride width.
 * @param w_padding    Width of the padding in the Feature Map.
 * @param h_padding    Height of the padding in the Feature Map.
 * @param output       Pointer to the location where outputs are stored.
 */
-int conv2d(float* f, int H, int W, float* g, int kH, int kW, int w_padding, int h_padding, float* output){
+int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, float* output){
 
     const int total_height = H + h_padding*2;
     const int total_width = W + w_padding*2;
+    const int total_strides_width = TOTAL_STRIDES(W, sW);
 
     // dimensions for convolution window
     const int M = (kH - 1) / 2;
     const int N = (kW - 1) / 2;
 
     // Iterate over every value in the feature map
-    for (int n = h_padding; n < total_height - h_padding; n++){
-        for (int k = w_padding; k < total_width - w_padding; k++){
+    for (int n = h_padding; n < total_height - h_padding; n=n+sH){
+        for (int k = w_padding; k < total_width - w_padding; k=k+sW){
 
             float result = 0.0f;
 
@@ -161,7 +167,7 @@ int conv2d(float* f, int H, int W, float* g, int kH, int kW, int w_padding, int 
                     result += f[IDX(n + i - M, k + j - N, total_width)] * g[IDX(i, j, kW)];
                 }
             }
-            output[IDX(n - h_padding, k - w_padding, W)] = result;
+            output[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = result;
         }
     }
     return 0;
@@ -295,6 +301,8 @@ int main(int argc, char** argv) {
     int W = 0;                      // -W <int>
     int kH = 0;                     // -kH <int>
     int kW = 0;                     // -kW <int>
+    int sW = 1;                     // -sW <int>
+    int sH = 1;                     // -sH <int>
     char* feature_file = NULL;      // -f <path>
     char* kernel_file = NULL;       // -g <path>
     char* output_file = NULL;       // -o <path>
@@ -330,6 +338,16 @@ int main(int argc, char** argv) {
         if (strcmp(argv[i], "-kW") == 0) {
             if (i + 1 >= argc) { printf("Incorrect usage of -kW flag. Please provide a kernel width.\n"); return 1; }
             kW = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 1;
+            continue;
+        }
+        if (strcmp(argv[i], "-sW") == 0) {
+            if (i + 1 >= argc) { printf("Incorrect usage of -sW flag. Please provide a stride width.\n"); return 1; }
+            sW = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 1;
+            continue;
+        }
+        if (strcmp(argv[i], "-sH") == 0) {
+            if (i + 1 >= argc) { printf("Incorrect usage of -sH flag. Please provide a stride height.\n"); return 1; }
+            sH = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 1;
             continue;
         }
         if (strcmp(argv[i], "-f") == 0) {
@@ -535,6 +553,9 @@ int main(int argc, char** argv) {
     float* outputs = NULL;              // Used for serial convolution
     float_array padded_outputs = {0};   // Used for parallel convolution    
     
+    // This is how many times a convolution takes place over each row/col. Also used to determine output array size.
+    const int total_strides_width = TOTAL_STRIDES(W, sW);
+    const int total_strides_height = TOTAL_STRIDES(H, sH);
 
     // Parallel Convolutions
     if (threads > 1){
@@ -548,7 +569,6 @@ int main(int argc, char** argv) {
             return 1;
         }
         padded_outputs.padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
-
 
         // Timing begins here, because implementation only starts here.
         double start_time = omp_get_wtime();
@@ -564,14 +584,14 @@ int main(int argc, char** argv) {
     // Serial Convolutions
     } else {
 
-        if (posix_memalign((void**)&outputs, 64, W * H * sizeof(float)) != 0){
+        if (posix_memalign((void**)&outputs, 64, total_strides_width * total_strides_height * sizeof(float)) != 0){
             printf("Error allocating memory for outputs.\n");
             return 1;
         }
 
         double start_time = omp_get_wtime();
 
-        if (conv2d(feature_map, H, W, kernel, kH, kW, padding_width, padding_height, outputs) != 0){
+        if (conv2d_stride(feature_map, H, W, kernel, kH, kW, sH, sW, padding_width, padding_height, outputs) != 0){
             printf("Error performing serial convolutions.\n");
             return 1;
         }
@@ -588,7 +608,7 @@ int main(int argc, char** argv) {
 
     if (output_file != NULL){
 
-        if (write_data_to_file(output_file, outputs, padded_outputs, H, W, 0, 0) != 0){
+        if (write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0) != 0){
             printf("Error writing outputs to file.\n");
             return 1;
         }
