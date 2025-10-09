@@ -95,11 +95,42 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 
     // Create a buffer to place extracted strings into
     const size_t buffer_size = (FLOAT_STRING_LENGTH * width) + 2; // +2 for new-line and null-byte
-    
     char* buffer = (char*)malloc(buffer_size);
+
+    const int rows_to_read = height + padding_height*2;
+    const int total_width = width + padding_width*2;
+    int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    const int row_offset = (rank == 0) ? padding_height : 0;
+    
+
 
     // Safely get the header here so we can ignore later
     fgets(buffer, buffer_size, file_ptr);
+
+    ///////////
+
+    // Skip all lines before the start
+    for (int i = 0; i < start_index-1; i++){
+        fgets(buffer, buffer_size, file_ptr);
+    }
+
+    // Read all lines we need
+    for (int i = 0; i < rows_to_read; i++){
+        if (fgets(buffer, buffer_size, file_ptr) == NULL) { break; } // Exit if invalid
+        char* token = strtok(buffer, " ");
+        for (int j = 0; j < width; j++) {
+            if (token != NULL){
+                float element = (float)atof(token);
+                (*output)[IDX(i + row_offset, j + padding_width, total_width)] = element; // Add to output.
+                token = strtok(NULL, " ");
+            }
+        }
+    }
+    free(buffer);
+    fclose(file_ptr);
+    return 0;
+
+    /*
 
     // Now loop over each line in the file
     int row_index = 0;
@@ -116,7 +147,7 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
             continue;
         }
 
-        if (row_index < start_index){
+        if (row_index < start_index) {
             row_index++;
             continue;
         }
@@ -136,6 +167,8 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
     free(buffer);
     fclose(file_ptr);
     return 0;
+
+    */
 }
 
 
@@ -232,7 +265,7 @@ Writes outputs to a file.
 @param h_dimension      The height of the outputs. Should be the same as the feature map.
 @param w_dimension      The width of the outputs. Should be the same as the feature map.
 */
-int write_data_to_file(char* filepath, float* outputs, float_array padded_outputs, int h_dimension, int w_dimension, int h_padding, int w_padding){
+int write_data_to_file(char* filepath, float* outputs, float_array padded_outputs, int h_dimension, int w_dimension, int h_padding, int w_padding, int append_dimensions ){
     if (filepath == NULL){ return 1; }
     FILE* file_ptr = fopen(filepath, "w");
     if (file_ptr == NULL){ return 1; }
@@ -244,7 +277,9 @@ int write_data_to_file(char* filepath, float* outputs, float_array padded_output
     file_ptr = fopen(filepath, "a");
 
     // Append the dimensions to the file
-    fprintf(file_ptr, "%d %d\n", h_dimension, w_dimension);
+    if (append_dimensions == 1){
+        fprintf(file_ptr, "%d %d\n", h_dimension, w_dimension);
+    }
     
     for (int i = h_padding; i < h_dimension + h_padding; i++){
         for (int j = w_padding; j < w_dimension + w_padding; j++){
@@ -425,7 +460,22 @@ int main(int argc, char** argv) {
 
     if (multi_benchmark_mode && (feature_file || kernel_file)) { printf("Do not input a file while running multi-benchmark mode.\n"); return 1; }
 
-    // ~~~~~~~~~~~~~~ 3. Kernel Generation / Extraction ~~~~~~~~~~~~~~ //
+
+
+    // ~~~~~~~~~~~~~~ 3. MPI Initialisation ~~~~~~~~~~~~~~ //
+
+    MPI_Init(NULL, NULL); 
+
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    // Get the number of processes
+    int world_size;
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+
+
+
+    // ~~~~~~~~~~~~~~ 4. Kernel Generation / Extraction ~~~~~~~~~~~~~~ //
 
     float* kernel = NULL;
 
@@ -446,7 +496,7 @@ int main(int argc, char** argv) {
 
         // If wanting to save inputs, write to kernel file
         if (kernel_file != NULL){
-            int status = write_data_to_file(kernel_file, kernel, (float_array){0}, kH, kW, 0, 0);
+            int status = write_data_to_file(kernel_file, kernel, (float_array){0}, kH, kW, 0, 0, 1);
             if (status != 0){
                 printf("Error writing kernel to file.\n");
                 return 1;
@@ -480,26 +530,19 @@ int main(int argc, char** argv) {
     const int padding_height = kH / 2;
 
 
+    // Determine the number of rows each process should use in convolutions.
+    // This ONLY thinks about the outer loop iterations. The real data size will have padding_height*2 added (because inner loops use more rows)
+    int chunk_size;
 
-    // ~~~~~~~~~~~~~~ 4. MPI Initialisation ~~~~~~~~~~~~~~ //
-    
-    //TODO: maybe move this after the feature map random generation? Or think about generating different portions of the feature map on different processes.
-
-    MPI_Init(NULL, NULL); 
-
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-    // Get the number of processes
-    int world_size;
-    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-
-    
+    // This just includes padding
+    int total_chunk_size;
 
 
     // ~~~~~~~~~~~~~~ 5. Feature Map Generation / Extraction ~~~~~~~~~~~~~~ //
 
     float* feature_map = NULL;
+
+    // TODO: Go through and make the feature maps generate different portions on different processes
 
     // Generate Feature Map
     if (H > 0 || W > 0){
@@ -510,6 +553,13 @@ int main(int argc, char** argv) {
 
         const int total_width = W + padding_width*2;
         const int total_height = H + padding_height*2;
+
+        // Determine the number of rows each process should use in convolutions.
+        // This ONLY thinks about the outer loop iterations. The real data size will have padding_height*2 added (because inner loops use more rows)
+        chunk_size = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
+
+        // This just includes padding
+        total_chunk_size = chunk_size + padding_height*2;
 
         // Allocating memory
         if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){
@@ -527,7 +577,7 @@ int main(int argc, char** argv) {
 
         // If wanting to save inputs, write to feature file
         if (feature_file != NULL){ //TODO: Make Processes all write to the feature file in order. Make them wait.
-            if (write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width) != 0){
+            if (write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width, 1) != 0){
                 printf("Error writing feature map to file.\n");
                 return 1;
             }
@@ -548,17 +598,16 @@ int main(int argc, char** argv) {
         const int total_width = W + padding_width*2;
         // const int total_height = H + padding_height*2;
 
-
         // Determine the number of rows each process should use in convolutions.
         // This ONLY thinks about the outer loop iterations. The real data size will have padding_height*2 added (because inner loops use more rows)
-        const int chunk_size = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
+        chunk_size = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
 
         // This just includes padding
-        const int total_chunk_size = chunk_size + padding_height*2;
+        total_chunk_size = chunk_size + padding_height*2;
+        
 
         // Used to determine when to start/stop reading data from feature map
-        const int start_index = (rank * chunk_size) + (rank >= (H % world_size) ? 1 : 0);
-        const int end_index = start_index + (total_chunk_size - padding_height);
+        const int start_index = rank * (H / world_size) + min(rank, (H % world_size));
 
 
 
@@ -574,25 +623,10 @@ int main(int argc, char** argv) {
         }
 
         // Extract Feature Map
-        if (extract_data(feature_file, W, end_index, padding_width, padding_height, start_index, &feature_map) != 0){
+        if (extract_data(feature_file, W, chunk_size, padding_width, padding_height, start_index, &feature_map) != 0){
             printf("Error extracting feature map data from file.\n");
             return 1;
         }
-
-
-        if(rank == 0){
-            printf("Start   =   %d\n", start_index);
-            printf("End     =   %d\n", end_index);
-            for (int i = 0; i < total_chunk_size; i++){
-                for (int j = 0; j < total_width; j++){
-                    printf("%f ", feature_map[IDX(i, j, total_width)]);
-                }
-                printf("\n");
-            }
-        }
-        
-        MPI_Finalize();
-        return 0;
     }
         
 
@@ -607,11 +641,11 @@ int main(int argc, char** argv) {
 
     // Defining output pointers
     float* outputs = NULL;              // Used for serial convolution
-    float_array padded_outputs = {0};   // Used for parallel convolution    
+    float_array padded_outputs = {0};   // Used for parallel convolution
     
     // This is how many times a convolution takes place over each row/col. Also used to determine output array size.
     const int total_strides_width = TOTAL_STRIDES(W, sW);
-    const int total_strides_height = TOTAL_STRIDES(H, sH);
+    const int total_strides_height = TOTAL_STRIDES(chunk_size, sH); // TODO: Fix this to work properly. This assumes stride = 1
 
     // Parallel Convolutions
     if (threads > 1){
@@ -647,7 +681,7 @@ int main(int argc, char** argv) {
 
         double start_time = omp_get_wtime();
 
-        if (conv2d_stride(feature_map, H, W, kernel, kH, kW, sH, sW, padding_width, padding_height, outputs) != 0){
+        if (conv2d_stride(feature_map, chunk_size, W, kernel, kH, kW, sH, sW, padding_width, padding_height, outputs) != 0){
             printf("Error performing serial convolutions.\n");
             return 1;
         }
@@ -664,10 +698,20 @@ int main(int argc, char** argv) {
 
     if (output_file != NULL){
 
-        if (write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0) != 0){
-            printf("Error writing outputs to file.\n");
-            return 1;
+        // Create status code for when a process is finished writing to file.
+        int finished_code;
+
+        // Process 0 will always 
+        if (rank == 0){
+            finished_code = write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0, 1);
+        } else {
+            MPI_Recv(&finished_code, 1, MPI_INT, rank-1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (finished_code == 0){
+                finished_code = write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0, 0); // Does not append dimensions
+            }
         }
+
+        MPI_Send(&finished_code, 1, MPI_INT, rank+1, 0, MPI_COMM_WORLD);
 
         // Free any remaining memory
         if (outputs != NULL) {free(outputs); outputs = NULL;}
