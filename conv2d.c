@@ -117,7 +117,9 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
         for (int j = 0; j < width; j++) {
             if (token != NULL){
                 float element = (float)atof(token);
-                (*output)[IDX(i + row_offset, j + padding_width, total_width)] = element; // Add to output.
+                int index = IDX(i + row_offset, j + padding_width, total_width);
+                if (index >= total_width * (height + padding_height*2)) {continue;}
+                (*output)[index] = element; // Add to output.
                 token = strtok(NULL, " ");
             }
         }
@@ -575,7 +577,7 @@ int main(int argc, char** argv) {
             printf("Error allocating memory for feature map.\n");
             return 1;
         }
-        
+
         // Add zeroes as padding
         for (int i = 0; i < total_width * total_chunk_size; i++){
             feature_map[i] = 0.0f;
@@ -683,7 +685,6 @@ int main(int argc, char** argv) {
     
     if (feature_map != NULL) {free(feature_map); feature_map = NULL; }
     if (kernel != NULL) {free(kernel); kernel = NULL; }
-
     MPI_Finalize();
     
 
