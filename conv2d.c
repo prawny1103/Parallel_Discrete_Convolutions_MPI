@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include <omp.h>
+#include <mpi.h>
 
 /* The string length of every float in the feature map. Example line: "0.594 0.934 0.212\n". 
 So, 3 floats, each looks like "X.XXX" which is 5 chars, but then all have a space or new-line 
@@ -82,10 +83,12 @@ int extract_dimensions(char* filepath, int* height, int* width) {
 * @param height           The number of rows. Height.
 * @param padding_width    The number of zeroes to pad the width with.
 * @param padding_height   The number of zeroes to pad the height with.
+* @param start_index      The index at which to start extracting rows of data. Used to divide up work using MPI. 
+                            To extract all data, set this to zero. To make an "end_index", use "height".
 * @param output           The stream into which the inputs will be stored.
 */
-int extract_data(char* filepath, int width, int height, int padding_width, int padding_height, float* *output) {
-    
+int extract_data(char* filepath, int width, int height, int padding_width, int padding_height, int start_index, float* *output) {
+
     if (filepath == NULL){ return 1; }
     FILE* file_ptr = fopen(filepath, "r");
     if (file_ptr == NULL){ return 1; }
@@ -95,7 +98,7 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
     
     char* buffer = (char*)malloc(buffer_size);
 
-    // get the header line here, so we can safely ignore it later
+    // Safely get the header here so we can ignore later
     fgets(buffer, buffer_size, file_ptr);
 
     // Now loop over each line in the file
@@ -110,6 +113,11 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
         fgets(buffer, buffer_size, file_ptr);
 
         if (buffer == NULL) {
+            continue;
+        }
+
+        if (row_index < start_index){
+            row_index++;
             continue;
         }
 
@@ -417,8 +425,6 @@ int main(int argc, char** argv) {
 
     if (multi_benchmark_mode && (feature_file || kernel_file)) { printf("Do not input a file while running multi-benchmark mode.\n"); return 1; }
 
-
-
     // ~~~~~~~~~~~~~~ 3. Kernel Generation / Extraction ~~~~~~~~~~~~~~ //
 
     float* kernel = NULL;
@@ -463,7 +469,7 @@ int main(int argc, char** argv) {
         }
 
         // Extracting data
-        if (extract_data(kernel_file, kW, kH, 0, 0, &kernel) != 0){
+        if (extract_data(kernel_file, kW, kH, 0, 0, 0, &kernel) != 0){
             printf("Error extracting kernel data from file.\n");
             return 1;
         }
@@ -473,9 +479,25 @@ int main(int argc, char** argv) {
     const int padding_width = kW / 2;
     const int padding_height = kH / 2;
 
+
+
+    // ~~~~~~~~~~~~~~ 4. MPI Initialisation ~~~~~~~~~~~~~~ //
     
+    //TODO: maybe move this after the feature map random generation? Or think about generating different portions of the feature map on different processes.
+
+    MPI_Init(NULL, NULL); 
+
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    // Get the number of processes
+    int world_size;
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+
     
-    // ~~~~~~~~~~~~~~ 4. Feature Map Generation / Extraction ~~~~~~~~~~~~~~ //
+
+
+    // ~~~~~~~~~~~~~~ 5. Feature Map Generation / Extraction ~~~~~~~~~~~~~~ //
 
     float* feature_map = NULL;
 
@@ -504,7 +526,7 @@ int main(int argc, char** argv) {
         generate_data(total_height, total_width, &feature_map);
 
         // If wanting to save inputs, write to feature file
-        if (feature_file != NULL){
+        if (feature_file != NULL){ //TODO: Make Processes all write to the feature file in order. Make them wait.
             if (write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width) != 0){
                 printf("Error writing feature map to file.\n");
                 return 1;
@@ -515,6 +537,8 @@ int main(int argc, char** argv) {
     // Extract Feature Map
     } else if (feature_file != NULL) {
 
+
+
         // Extract dimensions of the feature map
         if (extract_dimensions(feature_file, &H, &W) != 0){ 
             printf("Error extracting feature map dimensions from file.\n");
@@ -522,29 +546,58 @@ int main(int argc, char** argv) {
         }
 
         const int total_width = W + padding_width*2;
-        const int total_height = H + padding_height*2;
+        // const int total_height = H + padding_height*2;
+
+
+        // Determine the number of rows each process should use in convolutions.
+        // This ONLY thinks about the outer loop iterations. The real data size will have padding_height*2 added (because inner loops use more rows)
+        const int chunk_size = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
+
+        // This just includes padding
+        const int total_chunk_size = chunk_size + padding_height*2;
+
+        // Used to determine when to start/stop reading data from feature map
+        const int start_index = (rank * chunk_size) + (rank >= (H % world_size) ? 1 : 0);
+        const int end_index = start_index + (total_chunk_size - padding_height);
+
+
 
         // Allocate memory for the feature map of the feature map.
-        if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){
+        if (posix_memalign((void**)&feature_map, 64, total_width * total_chunk_size * sizeof(float)) != 0){
             printf("Error allocating memory for feature map.\n");
             return 1;
         }
         
         // Add zeroes as padding
-        for (int i = 0; i < total_width * total_height; i++){
+        for (int i = 0; i < total_width * total_chunk_size; i++){
             feature_map[i] = 0.0f;
         }
 
         // Extract Feature Map
-        if (extract_data(feature_file, W, H, padding_width, padding_height, &feature_map) != 0){
+        if (extract_data(feature_file, W, end_index, padding_width, padding_height, start_index, &feature_map) != 0){
             printf("Error extracting feature map data from file.\n");
             return 1;
-        }        
+        }
+
+
+        if(rank == 0){
+            printf("Start   =   %d\n", start_index);
+            printf("End     =   %d\n", end_index);
+            for (int i = 0; i < total_chunk_size; i++){
+                for (int j = 0; j < total_width; j++){
+                    printf("%f ", feature_map[IDX(i, j, total_width)]);
+                }
+                printf("\n");
+            }
+        }
+        
+        MPI_Finalize();
+        return 0;
     }
         
 
     
-    // ~~~~~~~~~~~~~~ 5. Serial Convolutions / Parallel Convolutions ~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~ 6. Serial Convolutions / Parallel Convolutions ~~~~~~~~~~~~~~ //
     
     // Check if we have all the inputs we need to perform convolutions
     if (kernel == NULL || feature_map == NULL){
@@ -607,7 +660,7 @@ int main(int argc, char** argv) {
         
 
 
-    // ~~~~~~~~~~~~~~ 6. Write to Output ~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~ 7. Write to Output ~~~~~~~~~~~~~~ //
 
     if (output_file != NULL){
 
@@ -625,6 +678,8 @@ int main(int argc, char** argv) {
     
     if (feature_map != NULL) {free(feature_map); feature_map = NULL; }
     if (kernel != NULL) {free(kernel); kernel = NULL; }
+
+    MPI_Finalize();
 
     } // End of loop for multi_benchmark_mode
 
