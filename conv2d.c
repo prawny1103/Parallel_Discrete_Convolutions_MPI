@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include <omp.h>
+#include <mpi.h>
 
 /* The string length of every float in the feature map. Example line: "0.594 0.934 0.212\n". 
 So, 3 floats, each looks like "X.XXX" which is 5 chars, but then all have a space or new-line 
@@ -284,7 +285,13 @@ int main(int argc, char** argv) {
 
     // ~~~~~~~~~~~~~~~ 1. Argument Extraction ~~~~~~~~~~~~~~ //
 
-
+    int processRank;
+    int commSize; 
+    
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &commSize);
+    MPI_Comm_rank(MPI_COMM_WORLD, &processRank);
+    
     omp_set_nested(1); // Allow nested parallelism for SIMD
 
     // Seed for random generation later
@@ -449,8 +456,8 @@ int main(int argc, char** argv) {
     }
 
     // This is the "same padding" that'll be added to the feature map.
-    const int padding_width = kW / 2;
-    const int padding_height = kH / 2;
+    int padding_width = kW / 2;
+    int padding_height = kH / 2;
 
     
     
@@ -520,9 +527,72 @@ int main(int argc, char** argv) {
             return 1;
         }        
     }
-        
 
-    
+    int rowsPerProcess = (H + padding_height * 2) / commSize;
+    int remainingRows = (H + padding_height * 2) % commSize;
+    int rows = rowsPerProcess + (processRank < remainingRows ? 1 : 0);
+    int elements = rows * (W + padding_width * 2);
+
+    float* localFeatureMap;
+    if (posix_memalign((void**)&localFeatureMap, 64, elements * sizeof(float)) != 0) {
+        printf("Error allocating memory for local feature map");
+        return 1;
+    }
+
+    int* sendCounts;
+    int* displacements;
+    if (processRank == 0) {
+        sendCounts = (int*)malloc(commSize * sizeof(int));
+        displacements = (int*)malloc(commSize * sizeof(int));
+
+        int displacement = 0;
+        for (int i = 0; i < commSize; i++) {
+            sendCounts[i] = (rowsPerProcess + (i < remainingRows ? 1 : 0)) * (W + padding_width * 2);
+            displacements[i] = displacement;
+            displacement += sendCounts[i];
+        }
+    }
+
+    MPI_Scatterv(feature_map, sendCounts, displacements, MPI_FLOAT,
+                 localFeatureMap, elements, MPI_FLOAT,
+                 0, MPI_COMM_WORLD);
+
+    if (processRank == 0) {
+        free(feature_map);
+        free(sendCounts);
+        free(displacements);
+    }
+    feature_map = localFeatureMap;
+    H = rows - padding_height * 2;
+
+    // Debugging
+    for (int rank = 0; rank < commSize; rank++) {
+    if (processRank == rank) {
+        printf("=== Process %d Local Feature Map ===\n", processRank);
+        printf("Local dimensions: %d rows (including padding), %d cols (including padding)\n", 
+               rows, W + padding_width * 2);
+        printf("Local H (after removing padding): %d\n", H);
+        
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < W + padding_width * 2; j++) {
+                printf("%.3f ", feature_map[IDX(i, j, W + padding_width * 2)]);
+            }
+            printf("\n");
+        }
+        printf("=== End Process %d ===\n\n");
+        fflush(stdout);
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+}
+
+    MPI_Bcast(&W, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&kH, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&kW, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&padding_width, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&padding_height, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(kernel, kH * kW, MPI_FLOAT, 0, MPI_COMM_WORLD);
+
+
     // ~~~~~~~~~~~~~~ 5. Serial Convolutions / Parallel Convolutions ~~~~~~~~~~~~~~ //
     
     // Check if we have all the inputs we need to perform convolutions
@@ -607,5 +677,6 @@ int main(int argc, char** argv) {
 
     if (multi_benchmark_mode == 1) {printf("Average Time:   %f\n", average_time/max_iterations);}
 
+    MPI_Finalize();
     return 0;
 }
