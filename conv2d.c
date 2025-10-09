@@ -102,12 +102,8 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
     int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     const int row_offset = (rank == 0) ? padding_height : 0;
     
-
-
     // Safely get the header here so we can ignore later
     fgets(buffer, buffer_size, file_ptr);
-
-    ///////////
 
     // Skip all lines before the start
     for (int i = 0; i < start_index-1; i++){
@@ -129,46 +125,6 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
     free(buffer);
     fclose(file_ptr);
     return 0;
-
-    /*
-
-    // Now loop over each line in the file
-    int row_index = 0;
-    while (row_index < (height + padding_height)){
-        
-        if(row_index < padding_height){
-            row_index++;
-            continue;
-        }
-
-        fgets(buffer, buffer_size, file_ptr);
-
-        if (buffer == NULL) {
-            continue;
-        }
-
-        if (row_index < start_index) {
-            row_index++;
-            continue;
-        }
-
-        char* token = strtok(buffer, " ");
-
-        // Now loop over each number in the line
-        int column_index = padding_width;
-        while (token != NULL){
-            float element = (float)atof(token);
-            (*output)[IDX(row_index, column_index, width + 2 * padding_width)] = element; // Add to output.
-            token = strtok(NULL, " ");
-            column_index++;
-        }
-        row_index++;
-    }
-    free(buffer);
-    fclose(file_ptr);
-    return 0;
-
-    */
 }
 
 
@@ -267,12 +223,17 @@ Writes outputs to a file.
 */
 int write_data_to_file(char* filepath, float* outputs, float_array padded_outputs, int h_dimension, int w_dimension, int h_padding, int w_padding, int append_dimensions ){
     if (filepath == NULL){ return 1; }
-    FILE* file_ptr = fopen(filepath, "w");
-    if (file_ptr == NULL){ return 1; }
 
-    // Empty the file, then close it.
-    fclose(file_ptr);
+    FILE* file_ptr;
 
+    if (append_dimensions == 1){
+        file_ptr = fopen(filepath, "w");
+        if (file_ptr == NULL){ return 1; }
+
+        // Empty the file, then close it.
+        fclose(file_ptr);
+    }
+    
     // Reopen file in append mode
     file_ptr = fopen(filepath, "a");
 
@@ -464,7 +425,7 @@ int main(int argc, char** argv) {
 
     // ~~~~~~~~~~~~~~ 3. MPI Initialisation ~~~~~~~~~~~~~~ //
 
-    MPI_Init(NULL, NULL); 
+    MPI_Init(&argc, &argv); 
 
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -586,8 +547,6 @@ int main(int argc, char** argv) {
 
     // Extract Feature Map
     } else if (feature_file != NULL) {
-
-
 
         // Extract dimensions of the feature map
         if (extract_dimensions(feature_file, &H, &W) != 0){ 
@@ -711,7 +670,9 @@ int main(int argc, char** argv) {
             }
         }
 
-        MPI_Send(&finished_code, 1, MPI_INT, rank+1, 0, MPI_COMM_WORLD);
+        if(rank + 1 < world_size){
+            MPI_Send(&finished_code, 1, MPI_INT, rank+1, 0, MPI_COMM_WORLD);
+        }
 
         // Free any remaining memory
         if (outputs != NULL) {free(outputs); outputs = NULL;}
@@ -724,6 +685,7 @@ int main(int argc, char** argv) {
     if (kernel != NULL) {free(kernel); kernel = NULL; }
 
     MPI_Finalize();
+    
 
     } // End of loop for multi_benchmark_mode
 
