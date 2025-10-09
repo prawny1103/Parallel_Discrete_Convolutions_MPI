@@ -217,13 +217,16 @@ int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int
 
 /*
 Writes outputs to a file.
-@param filepath         The filepath of where to find/put the output file.
-@param outputs          A 2d array of float32s. This is what is written to the file for serial convolutions.
-@param padded_outputs   A padded 2d array of float32s. This is written to the file, instead of `outputs`, when outputting data from a parallel convolution.
-@param h_dimension      The height of the outputs. Should be the same as the feature map.
-@param w_dimension      The width of the outputs. Should be the same as the feature map.
+@param filepath             The filepath of where to find/put the output file.
+@param outputs              A 2d array of float32s. This is what is written to the file for serial convolutions.
+@param padded_outputs       A padded 2d array of float32s. This is written to the file, instead of `outputs`, when outputting data from a parallel convolution.
+@param height               The height of the outputs.
+@param width                The width of the outputs.
+@param append_dimensions    Whether or not the w_dimension and h_dimension fields should be written into the file.
+@param w_dimension          The height dimension to write to the file.
+@param h_dimension          The width dimension to write to the file.
 */
-int write_data_to_file(char* filepath, float* outputs, float_array padded_outputs, int h_dimension, int w_dimension, int h_padding, int w_padding, int append_dimensions ){
+int write_data_to_file(char* filepath, float* outputs, float_array padded_outputs, int height, int width, int h_padding, int w_padding, int append_dimensions, int w_dimension, int h_dimension ){
     if (filepath == NULL){ return 1; }
 
     FILE* file_ptr;
@@ -244,14 +247,14 @@ int write_data_to_file(char* filepath, float* outputs, float_array padded_output
         fprintf(file_ptr, "%d %d\n", h_dimension, w_dimension);
     }
     
-    for (int i = h_padding; i < h_dimension + h_padding; i++){
-        for (int j = w_padding; j < w_dimension + w_padding; j++){
+    for (int i = h_padding; i < height + h_padding; i++){
+        for (int j = w_padding; j < width + w_padding; j++){
 
             // Depending if paralleism is enabled or not, print the outputs
             if (outputs != NULL){
-                fprintf(file_ptr, "%.3f ", outputs[IDX(i-h_padding, j-w_padding, w_dimension)]);
+                fprintf(file_ptr, "%.3f ", outputs[IDX(i-h_padding, j-w_padding, width)]);
             } else if (padded_outputs.arr != NULL){
-                fprintf(file_ptr, "%.3f ", padded_outputs.arr[IDX(i-h_padding, j-w_padding, w_dimension)]);
+                fprintf(file_ptr, "%.3f ", padded_outputs.arr[IDX(i-h_padding, j-w_padding, width)]);
             } else { return 1; }
             
         }
@@ -459,7 +462,7 @@ int main(int argc, char** argv) {
 
         // If wanting to save inputs, write to kernel file
         if (kernel_file != NULL){
-            int status = write_data_to_file(kernel_file, kernel, (float_array){0}, kH, kW, 0, 0, 1);
+            int status = write_data_to_file(kernel_file, kernel, (float_array){0}, kH, kW, 0, 0, 1, kW, kH);
             if (status != 0){
                 printf("Error writing kernel to file.\n");
                 return 1;
@@ -540,7 +543,7 @@ int main(int argc, char** argv) {
 
         // If wanting to save inputs, write to feature file
         if (feature_file != NULL){ //TODO: Make Processes all write to the feature file in order. Make them wait.
-            if (write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width, 1) != 0){
+            if (write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width, 1, W, H) != 0){
                 printf("Error writing feature map to file.\n");
                 return 1;
             }
@@ -659,16 +662,31 @@ int main(int argc, char** argv) {
 
     if (output_file != NULL){
 
+        // Sync up the total height of the feature map
+        MPI_Barrier(MPI_COMM_WORLD);
+        int total_height = total_strides_height;
+        if (rank > 0){
+            MPI_Recv(&total_height, 1, MPI_INT, rank-1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            total_height = total_height + total_strides_height;
+        }
+        const int destination = rank+1 < world_size ? rank+1 : 0;
+
+        MPI_Send(&total_height, 1, MPI_INT, destination, 0, MPI_COMM_WORLD);
+
+        if (rank == 0) {
+            MPI_Recv(&total_height, 1, MPI_INT, world_size-1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+        
         // Create status code for when a process is finished writing to file.
         int finished_code;
 
         // Process 0 will always 
         if (rank == 0){
-            finished_code = write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0, 1);
+            finished_code = write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0, 1, total_strides_width, total_height);
         } else {
             MPI_Recv(&finished_code, 1, MPI_INT, rank-1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             if (finished_code == 0){
-                finished_code = write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0, 0); // Does not append dimensions
+                finished_code = write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0, 0, 0, 0); // Does not append dimensions
             }
         }
 
