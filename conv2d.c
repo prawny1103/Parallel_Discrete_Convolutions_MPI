@@ -36,6 +36,16 @@ character. */
 // Macro for finding the total number of strides in a row or column
 #define TOTAL_STRIDES(size, stride) ((size>0) ? (((size-1)/stride) + 1) : (0))
 
+// Macro for rounding to the nearest integer.
+#define ROUND(number) ( ((int)((number) + 0.5)))
+
+// Macro for calculating power
+#define POW(base, exponent) (({ int RESULT = 1; for (int INDEX = 0; INDEX < exponent; INDEX++) { RESULT *= (base); } RESULT; }))
+
+// Macro for accurate rounding.
+#define ROUNDF(number, precision) ( (float)(ROUND(number * POW(10, precision))) / (float)(POW(10, precision)) )
+
+
 // A struct to hold a float array and its padding, to prevent false sharing.
 typedef struct {
     float* arr;
@@ -176,18 +186,29 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
         for (int k = w_padding; k < total_width - w_padding; k=k+sW){
             
             if (( start_index + n-h_padding) % sH != 0){ break; } // TODO: This might cause bugs with "for collapse()". Need to check.
-            float result = 0.0f;
+            float result = 0.0; // Original
+            double d_result = 0.0;
+            long double ld_result = 0.0;
 
             // Iterate over every value in the kernel
             for (int j = 0; j < kW; j++){
                 for (int i = 0; i < kH; i++){
-                    result += f[IDX(n + i - M, k + j - N, total_width)] * g[IDX(i, j, kW)];
+                    result += f[IDX(n + i - M, k + j - N, total_width)] * g[IDX(i, j, kW)]; // Original
+                    d_result += (double)(f[IDX(n + i - M, k + j - N, total_width)]) * (double)(g[IDX(i, j, kW)]);
+                    ld_result += (long double)(f[IDX(n + i - M, k + j - N, total_width)]) * (long double)(g[IDX(i, j, kW)]);
                 }
             }
-            output[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = result;
-            // int rank;
-            // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-            // if (n - h_padding == 0 && k - w_padding == 0) printf("Process %d,   val = %f\n", rank, result);
+
+            // Debugging prints for specific values of n and k. These are the values that tend to break.
+
+            if (result >= 6.546 && result < 6.547 && n==5){  printf("Correct: 6.546,    Mine: %f,    Double: %0.15lf,    long: %0.32f\n", result, d_result, ROUNDF(ld_result,3) ); }
+            //if (result >= 5.717 && result < 5.718 && n==9){  printf("Correct: 5.718,    Mine: %0.3f,    Double: %0.15lf,    long: %0.20Lf\n", result, d_result, ld_result ); }
+            if (result >= 5.1085 && result < 5.10853 && n==22){ printf("Correct: 5.108,    Mine: %f,    Double: %0.15lf,    long: %0.32f\n", result, d_result, ROUNDF(ld_result,3) ); }
+            // if (result >= 6.106 && result < 6.107 && n==54){ printf("Correct: 6.107,    Mine: %0.3f,    Double: %0.15lf,    long: %0.20Lf\n", result, d_result, ld_result ); }
+            // if (result >= 5.934 && result < 5.935 && n==96){ printf("Correct: 5.934,    Mine: %0.3f,    Double: %0.15lf,    long: %0.20Lf\n", result, d_result, ld_result ); }
+            // if (result >= 5.884 && result < 5.885 && n==99){ printf("Correct: 5.884,    Mine: %0.3f,    Double: %0.15lf,    long: %0.20Lf\n", result, d_result, ld_result ); }
+
+            output[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = ROUNDF(ld_result, 3);
             return_code = 0;
         }
     }
@@ -274,9 +295,12 @@ int write_data_to_file(char* filepath, float* outputs, float_array padded_output
 
             // Depending if paralleism is enabled or not, print the outputs
             if (outputs != NULL){
-                fprintf(file_ptr, "%.3f ", outputs[IDX(i-h_padding, j-w_padding, width)]);
+                fprintf(file_ptr, "%0.3f ", outputs[IDX(i-h_padding, j-w_padding, width)]);
+                //fprintf(file_ptr, "%0.3f ", ROUNDF(outputs[IDX(i-h_padding, j-w_padding, width)], 3));
+                //fprintf(file_ptr, "%0.3f ", ROUNDF_T(outputs[IDX(i-h_padding, j-w_padding, width)], 3));
             } else if (padded_outputs.arr != NULL){
-                fprintf(file_ptr, "%.3f ", padded_outputs.arr[IDX(i-h_padding, j-w_padding, width)]);
+                fprintf(file_ptr, "%0.3f ", padded_outputs.arr[IDX(i-h_padding, j-w_padding, width)]);
+                //fprintf(file_ptr, "%0.3f ", ROUNDF(padded_outputs.arr[IDX(i-h_padding, j-w_padding, width)], 4));
             } else { return 1; }
             
         }
@@ -313,7 +337,7 @@ int generate_data(int height, int width, float* *output, int seed){
 
 
 int main(int argc, char** argv) {
-    
+
     // ~~~~~~~~~~~~~~~ MAIN CONTENTS ~~~~~~~~~~~~~~ //
     // 1. Argument Extraction
     // 2. Error Handling
@@ -323,9 +347,7 @@ int main(int argc, char** argv) {
     // 6. Write to Output
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
-
     // ~~~~~~~~~~~~~~~ 1. Argument Extraction ~~~~~~~~~~~~~~ //
-
 
     omp_set_nested(1); // Allow nested parallelism for SIMD
 
@@ -631,7 +653,6 @@ int main(int argc, char** argv) {
         
 
         start_index = max(0, rank * (H / world_size) + min(rank, (H % world_size)) - max(0, padding_height-1));
-        printf("Process = %d,   start_index = %d\n", rank, start_index);
 
 
         // Allocate memory for the feature map of the feature map.
