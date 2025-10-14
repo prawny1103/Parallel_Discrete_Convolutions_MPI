@@ -182,33 +182,21 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     int return_code = 1;
 
     // Iterate over every value in the feature map
-    for (int n = h_padding; n < total_height - h_padding; n++){      // Originally: n=n+sH
+    for (int n = h_padding; n < total_height - h_padding; n++){
         for (int k = w_padding; k < total_width - w_padding; k=k+sW){
             
             if (( start_index + n-h_padding) % sH != 0){ break; } // TODO: This might cause bugs with "for collapse()". Need to check.
-            float result = 0.0; // Original
-            double d_result = 0.0;
-            long double ld_result = 0.0;
+            long double result = 0.0;
 
             // Iterate over every value in the kernel
             for (int j = 0; j < kW; j++){
                 for (int i = 0; i < kH; i++){
-                    result += f[IDX(n + i - M, k + j - N, total_width)] * g[IDX(i, j, kW)]; // Original
-                    d_result += (double)(f[IDX(n + i - M, k + j - N, total_width)]) * (double)(g[IDX(i, j, kW)]);
-                    ld_result += (long double)(f[IDX(n + i - M, k + j - N, total_width)]) * (long double)(g[IDX(i, j, kW)]);
+                    result += (long double)(f[IDX(n + i - M, k + j - N, total_width)]) * (long double)(g[IDX(i, j, kW)]);
                 }
             }
 
-            // Debugging prints for specific values of n and k. These are the values that tend to break.
-
-            if (result >= 6.546 && result < 6.547 && n==5){  printf("Correct: 6.546,    Mine: %f,    Double: %0.15lf,    long: %0.32f\n", result, d_result, ROUNDF(ld_result,3) ); }
-            //if (result >= 5.717 && result < 5.718 && n==9){  printf("Correct: 5.718,    Mine: %0.3f,    Double: %0.15lf,    long: %0.20Lf\n", result, d_result, ld_result ); }
-            if (result >= 5.1085 && result < 5.10853 && n==22){ printf("Correct: 5.108,    Mine: %f,    Double: %0.15lf,    long: %0.32f\n", result, d_result, ROUNDF(ld_result,3) ); }
-            // if (result >= 6.106 && result < 6.107 && n==54){ printf("Correct: 6.107,    Mine: %0.3f,    Double: %0.15lf,    long: %0.20Lf\n", result, d_result, ld_result ); }
-            // if (result >= 5.934 && result < 5.935 && n==96){ printf("Correct: 5.934,    Mine: %0.3f,    Double: %0.15lf,    long: %0.20Lf\n", result, d_result, ld_result ); }
-            // if (result >= 5.884 && result < 5.885 && n==99){ printf("Correct: 5.884,    Mine: %0.3f,    Double: %0.15lf,    long: %0.20Lf\n", result, d_result, ld_result ); }
-
-            output[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = ROUNDF(ld_result, 3);
+            // Debugging prints for specific values of n and k. These are the values that tend to break things.
+            output[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = ROUNDF(result, 3);
             return_code = 0;
         }
     }
@@ -296,11 +284,8 @@ int write_data_to_file(char* filepath, float* outputs, float_array padded_output
             // Depending if paralleism is enabled or not, print the outputs
             if (outputs != NULL){
                 fprintf(file_ptr, "%0.3f ", outputs[IDX(i-h_padding, j-w_padding, width)]);
-                //fprintf(file_ptr, "%0.3f ", ROUNDF(outputs[IDX(i-h_padding, j-w_padding, width)], 3));
-                //fprintf(file_ptr, "%0.3f ", ROUNDF_T(outputs[IDX(i-h_padding, j-w_padding, width)], 3));
             } else if (padded_outputs.arr != NULL){
                 fprintf(file_ptr, "%0.3f ", padded_outputs.arr[IDX(i-h_padding, j-w_padding, width)]);
-                //fprintf(file_ptr, "%0.3f ", ROUNDF(padded_outputs.arr[IDX(i-h_padding, j-w_padding, width)], 4));
             } else { return 1; }
             
         }
