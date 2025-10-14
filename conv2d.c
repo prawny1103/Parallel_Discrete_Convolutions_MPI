@@ -185,7 +185,7 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     for (int n = h_padding; n < total_height - h_padding; n++){
         for (int k = w_padding; k < total_width - w_padding; k=k+sW){
             
-            if (( start_index + n-h_padding) % sH != 0){ break; } // TODO: This might cause bugs with "for collapse()". Need to check.
+            if (( start_index + n-h_padding) % sH != 0){ continue; } // TODO: This might cause bugs with "for collapse()". Need to check.
             long double result = 0.0;
 
             // Iterate over every value in the kernel
@@ -216,9 +216,11 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
 * @param sW             Stride width.
 * @param w_padding      Width of the padding in the Feature Map.
 * @param h_padding      Height of the padding in the Feature Map.
+* @param start_index    The starting index location, of index 0 in the local Feature Map, in the original Feature Map.
+                            This is used for calculating stride at runtime, to determine which rows should be skipped.
 * @param padded_output  Location where outputs are stored.
 */
-int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, float_array padded_output){
+int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, int start_index, float_array padded_output){
 
     const int total_height = H + h_padding*2;
     const int total_width = W + w_padding*2;
@@ -228,21 +230,28 @@ int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int
     const int M = (kH - 1) / 2;
     const int N = (kW - 1) / 2;
 
+    // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error.
+    // The purpose of this variable is to avoid using outputs that have no valid elements.
+    int return_code = 1;
+
     #pragma omp parallel for collapse(2) schedule(dynamic, total_width)
-    for (int n = h_padding; n < total_height - h_padding; n=n+sH){
+    for (int n = h_padding; n < total_height - h_padding; n++){
         for (int k = w_padding; k < total_width - w_padding; k=k+sW){
-            float result = 0.0f;
+
+            if (( start_index + n-h_padding) % sH != 0){ continue; } // TODO: This might cause bugs with "for collapse()". Need to check.
+            long double result = 0.0;
 
             #pragma omp simd collapse(2) reduction(+:result)
             for (int j = 0; j < kW; j++){
                 for (int i = 0; i < kH; i++){
-                    result += f[IDX(n + i - M, k + j - N, total_width)] * g[IDX(i, j, kW)];
+                    result += (long double)(f[IDX(n + i - M, k + j - N, total_width)]) * (long double)(g[IDX(i, j, kW)]);
                 }
             }
-            padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = result;
+            padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = ROUNDF(result,3);
+            return_code = 0;
         }
     }
-    return 0;
+    return return_code;
 }
 
 
@@ -702,7 +711,7 @@ int main(int argc, char** argv) {
         // Timing begins here, because implementation only starts here.
         double start_time = omp_get_wtime();
 
-        if (parallel_conv2d_stride(feature_map, H, W, kernel, kH, kW, sH, sW, padding_width, padding_height, padded_outputs) != 0) {
+        if (parallel_conv2d_stride(feature_map, H, W, kernel, kH, kW, sH, sW, padding_width, padding_height, start_index, padded_outputs) != 0) {
             printf("Error performing parallel convolutions.\n");
             return 1;
         }
