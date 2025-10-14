@@ -76,18 +76,20 @@ int extract_dimensions(char* filepath, int* height, int* width) {
 }
 
 
-/* 
+/* TODO: Check if we can remove "sW" and "sH", we might not need them in the end.
 * Reads an input file and extracts data into an output. 
-* @param filepath         The filepath where the data is stored.
-* @param width            The number of elements in each line. Width.
-* @param height           The number of rows. Height.
-* @param padding_width    The number of zeroes to pad the width with.
-* @param padding_height   The number of zeroes to pad the height with.
-* @param start_index      The index at which to start extracting rows of data. Used to divide up work using MPI. 
-                            To extract all data, set this to zero. To make an "end_index", use "height".
-* @param output           The stream into which the inputs will be stored.
+* @param filepath           The filepath where the data is stored.
+* @param width              The number of elements in each line. Width.
+* @param height             The number of rows. Height.
+* @param padding_width      The number of zeroes to pad the width with.
+* @param padding_height     The number of zeroes to pad the height with.
+* @param start_index        The index at which to start extracting rows of data. Used to divide up work using MPI. 
+                                To extract all data, set this to zero. To make an "end_index", use "height".
+* @param sW                 Stride width.
+* @param sH                 Stride height.
+* @param output             The stream into which the inputs will be stored.
 */
-int extract_data(char* filepath, int width, int height, int padding_width, int padding_height, int start_index, float* *output) {
+int extract_data(char* filepath, int width, int height, int padding_width, int padding_height, int start_index, /*int sW, int sH,*/ float* *output) {
 
     if (filepath == NULL){ return 1; }
     FILE* file_ptr = fopen(filepath, "r");
@@ -110,14 +112,23 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
         fgets(buffer, buffer_size, file_ptr);
     }
 
-    // Read all lines we need
+    // Iterates over every row
     for (int i = 0; i < rows_to_read; i++){
         if (fgets(buffer, buffer_size, file_ptr) == NULL) { break; } // Exit if invalid
         char* token = strtok(buffer, " ");
+
+        // Iterates over every column in the row
         for (int j = 0; j < width; j++) {
             if (token != NULL){
-                float element = (float)atof(token);
-                int index = IDX(i + row_offset, j + padding_width, total_width);
+
+                // Extracted float data from the token 
+                const float element = (float)atof(token);
+
+                // Calculations for where to put the extracted data into the output array
+                const int output_col_index = i + row_offset;       // TODO: Might need   i/sH + row_offset
+                const int output_row_index = j + padding_width;    // TODO: Might need   j/sW + padding_width
+                const int index = IDX(output_col_index, output_row_index, total_width); 
+                
                 if (index >= total_width * (height + padding_height*2)) {continue;}
                 (*output)[index] = element; // Add to output.
                 token = strtok(NULL, " ");
@@ -132,19 +143,21 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 
 /* 
 * Performs serial 2D discrete convolutions. 
-* @param f             Pointer to the Feature Map.
-* @param H            Height of the Feature Map.
-* @param W            Width of the Feature Map.
-* @param g            Pointer to the Kernel.
-* @param kH           Height of the Kernel.
-* @param kW           Width of the Kernel.
-* @param sH           Stride height.
-* @param sW           Stride width.
-* @param w_padding    Width of the padding in the Feature Map.
-* @param h_padding    Height of the padding in the Feature Map.
-* @param output       Pointer to the location where outputs are stored.
+* @param f              Pointer to the Feature Map.
+* @param H              Height of the Feature Map.
+* @param W              Width of the Feature Map.
+* @param g              Pointer to the Kernel.
+* @param kH             Height of the Kernel.
+* @param kW             Width of the Kernel.
+* @param sH             Stride height.
+* @param sW             Stride width.
+* @param w_padding      Width of the padding in the Feature Map.
+* @param h_padding      Height of the padding in the Feature Map.
+* @param start_index    The starting index location, of index 0 in the local Feature Map, in the original Feature Map.
+                            This is used for calculating stride at runtime, to determine which rows should be skipped.
+* @param output         Pointer to the location where outputs are stored.
 */
-int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, float* output){
+int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, int start_index, float* output){
 
     const int total_height = H + h_padding*2;
     const int total_width = W + w_padding*2;
@@ -154,10 +167,15 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     const int M = (kH - 1) / 2;
     const int N = (kW - 1) / 2;
 
-    // Iterate over every value in the feature map
-    for (int n = h_padding; n < total_height - h_padding; n=n+sH){
-        for (int k = w_padding; k < total_width - w_padding; k=k+sW){
+    // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error.
+    // The purpose of this variable is to avoid using outputs that have no valid elements.
+    int return_code = 1;
 
+    // Iterate over every value in the feature map
+    for (int n = h_padding; n < total_height - h_padding; n++){      // Originally: n=n+sH
+        for (int k = w_padding; k < total_width - w_padding; k=k+sW){
+            
+            if (( start_index + n-h_padding) % sH != 0){ break; } // TODO: This might cause bugs with "for collapse()". Need to check.
             float result = 0.0f;
 
             // Iterate over every value in the kernel
@@ -167,9 +185,13 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
                 }
             }
             output[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = result;
+            // int rank;
+            // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            // if (n - h_padding == 0 && k - w_padding == 0) printf("Process %d,   val = %f\n", rank, result);
+            return_code = 0;
         }
     }
-    return 0;
+    return return_code;
 }
 
 
@@ -489,7 +511,7 @@ int main(int argc, char** argv) {
         }
 
         // Extracting data
-        if (extract_data(kernel_file, kW, kH, 0, 0, 0, &kernel) != 0){
+        if (extract_data(kernel_file, kW, kH, 0, 0, 0,/* sW, sH,*/ &kernel) != 0){
             printf("Error extracting kernel data from file.\n");
             return 1;
         }
@@ -512,7 +534,8 @@ int main(int argc, char** argv) {
 
     float* feature_map = NULL;
 
-    // TODO: Go through and make the feature maps generate different portions on different processes
+    // Used to determine the starting index in the feature map where relevant data is found for a process.
+    int start_index;
 
     // Generate Feature Map
     if (H > 0 || W > 0){
@@ -520,6 +543,8 @@ int main(int argc, char** argv) {
         // Allows users to specify only 1 dimension, and prevents them from inputting negative numbers
         H = max(H, 1);
         W = max(W, 1);
+
+        start_index = rank * (H / world_size) + min(rank, (H % world_size));
 
         const int total_width = W + padding_width*2;
         const int total_height = H + padding_height*2;
@@ -605,9 +630,8 @@ int main(int argc, char** argv) {
         totalRowCount = rowCount + padding_height*2;
         
 
-        // Used to determine when to start/stop reading data from feature map
-        const int start_index = rank * (H / world_size) + min(rank, (H % world_size));
-
+        start_index = max(0, rank * (H / world_size) + min(rank, (H % world_size)) - max(0, padding_height-1));
+        printf("Process = %d,   start_index = %d\n", rank, start_index);
 
 
         // Allocate memory for the feature map of the feature map.
@@ -622,9 +646,16 @@ int main(int argc, char** argv) {
         }
 
         // Extract Feature Map
-        if (extract_data(feature_file, W, rowCount, padding_width, padding_height, start_index, &feature_map) != 0){
+        if (extract_data(feature_file, W, rowCount, padding_width, padding_height, start_index,/* sW, sH,*/ &feature_map) != 0){
             printf("Error extracting feature map data from file.\n");
             return 1;
+        }
+
+        if (rank == 0) {
+            write_data_to_file("f4_rank0.txt", feature_map, (float_array){0}, totalRowCount, total_width, padding_height, padding_width, 1, W, rowCount);
+        }
+        if (rank == 1) {
+            write_data_to_file("f4_rank1.txt", feature_map, (float_array){0}, totalRowCount, total_width, padding_height, padding_width, 1, W, rowCount);
         }
     }
         
@@ -645,6 +676,9 @@ int main(int argc, char** argv) {
     // This is how many times a convolution takes place over each row/col. Also used to determine output array size.
     const int total_strides_width = TOTAL_STRIDES(W, sW);
     const int total_strides_height = TOTAL_STRIDES(rowCount, sH); // TODO: Fix this to work properly. This assumes stride = 1
+
+    // Used to determine if a process should write to file. This changes to 0 if an error occurs in the convolutions.
+    int should_write_to_file = 1;
 
     // Parallel Convolutions
     if (threads > 1){
@@ -680,9 +714,8 @@ int main(int argc, char** argv) {
 
         double start_time = omp_get_wtime();
 
-        if (conv2d_stride(feature_map, rowCount, W, kernel, kH, kW, sH, sW, padding_width, padding_height, outputs) != 0){
-            printf("Error performing serial convolutions.\n");
-            return 1;
+        if (conv2d_stride(feature_map, rowCount, W, kernel, kH, kW, sH, sW, padding_width, padding_height, start_index, outputs) != 0){
+            should_write_to_file = 0;
         }
 
         // Benchmarking
@@ -702,7 +735,8 @@ int main(int argc, char** argv) {
         int total_height = total_strides_height;
         if (rank > 0){
             MPI_Recv(&total_height, 1, MPI_INT, rank-1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            total_height = total_height + total_strides_height;
+            const int height_to_add = should_write_to_file == 1 ? total_strides_height : 0; // This is to avoid adding any height if this process shouldn't output.
+            total_height = total_height + height_to_add;
         }
         const int destination = rank+1 < world_size ? rank+1 : 0;
 
@@ -720,7 +754,7 @@ int main(int argc, char** argv) {
             finished_code = write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0, 1, total_strides_width, total_height);
         } else {
             MPI_Recv(&finished_code, 1, MPI_INT, rank-1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            if (finished_code == 0){
+            if (finished_code == 0 && should_write_to_file == 1){
                 finished_code = write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0, 0, 0, 0); // Does not append dimensions
             }
         }
