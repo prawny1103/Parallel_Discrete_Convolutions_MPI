@@ -274,10 +274,12 @@ Generates a 2d array of random floats.
 @param width    The width of the array.
 @param output   The location where the generated data will be stored.
 */
-int generate_data(int height, int width, float* *output){
+int generate_data(int height, int width, float* *output, int seed){
 
     // Make a new random seed. This stops f from being the same as g when the code runs too fast.
-    srand(rand());
+    if (seed == -1) {
+        srand(rand());
+    }
     
     for (int i=0; i<height; i++){
         for (int j=0; j<width; j++){
@@ -306,7 +308,9 @@ int main(int argc, char** argv) {
     omp_set_nested(1); // Allow nested parallelism for SIMD
 
     // Seed for random generation later
-    srand(time(0));
+    // TODO: change this to something else, I just did this for testing
+    int featureMapSeed = 12345;
+    // srand(time(0));
 
     // Initialising variables for future use
     int H = 0;                      // -H <int>
@@ -458,7 +462,7 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        generate_data(kH, kW, &kernel);
+        generate_data(kH, kW, &kernel, -1);
 
         // If wanting to save inputs, write to kernel file
         if (kernel_file != NULL){
@@ -498,10 +502,10 @@ int main(int argc, char** argv) {
 
     // Determine the number of rows each process should use in convolutions.
     // This ONLY thinks about the outer loop iterations. The real data size will have padding_height*2 added (because inner loops use more rows)
-    int chunk_size;
+    int rowCount;
 
     // This just includes padding
-    int total_chunk_size;
+    int totalRowCount;
 
 
     // ~~~~~~~~~~~~~~ 5. Feature Map Generation / Extraction ~~~~~~~~~~~~~~ //
@@ -521,11 +525,22 @@ int main(int argc, char** argv) {
         const int total_height = H + padding_height*2;
 
         // Determine the number of rows each process should use in convolutions.
-        // This ONLY thinks about the outer loop iterations. The real data size will have padding_height*2 added (because inner loops use more rows)
-        chunk_size = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
+        rowCount = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
 
-        // This just includes padding
-        total_chunk_size = chunk_size + padding_height*2;
+        int overlapBefore = 0;
+        int overlapAfter = 0;
+        
+        if (rank > 0) overlapBefore = padding_height;
+        if (rank < world_size - 1) overlapAfter = padding_height;
+        
+        totalRowCount = rowCount + overlapBefore + overlapAfter;
+
+        int startRow = 0;
+        for (int i = 0; i < rank; i++) {
+            startRow += (H / world_size) + (i < (H % world_size) ? 1 : 0);
+        }
+        
+        int startWithOverlap = startRow - overlapBefore;
 
         // Allocating memory
         if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){
@@ -534,12 +549,32 @@ int main(int argc, char** argv) {
         }
 
         // Add zeroes as padding
-        for (int i = 0; i < total_width * total_height; i++){
+        for (int i = 0; i < total_width * totalRowCount; i++){
             feature_map[i] = 0.0f;
         }
-        
 
-        generate_data(total_height, total_width, &feature_map);
+        float* temp_data = NULL;
+        if (posix_memalign((void**)&temp_data, 64, W * totalRowCount * sizeof(float)) != 0){
+            printf("Error allocating temporary memory for feature map generation.\n");
+            return 1;
+        }
+
+        srand(featureMapSeed);
+        
+        int values_to_skip = startWithOverlap * W;
+        for (int i = 0; i < values_to_skip; i++) {
+            rand();
+        }
+
+        generate_data(totalRowCount, W, &temp_data, featureMapSeed);
+
+        for (int i = 0; i < totalRowCount; i++) {
+            for (int j = 0; j < W; j++) {
+                feature_map[IDX(i, j + padding_width, total_width)] = temp_data[IDX(i, j, W)];
+            }
+        }
+
+        free(temp_data);
 
         // If wanting to save inputs, write to feature file
         if (feature_file != NULL){ //TODO: Make Processes all write to the feature file in order. Make them wait.
@@ -564,10 +599,10 @@ int main(int argc, char** argv) {
 
         // Determine the number of rows each process should use in convolutions.
         // This ONLY thinks about the outer loop iterations. The real data size will have padding_height*2 added (because inner loops use more rows)
-        chunk_size = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
+        rowCount = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
 
         // This just includes padding
-        total_chunk_size = chunk_size + padding_height*2;
+        totalRowCount = rowCount + padding_height*2;
         
 
         // Used to determine when to start/stop reading data from feature map
@@ -576,18 +611,18 @@ int main(int argc, char** argv) {
 
 
         // Allocate memory for the feature map of the feature map.
-        if (posix_memalign((void**)&feature_map, 64, total_width * total_chunk_size * sizeof(float)) != 0){
+        if (posix_memalign((void**)&feature_map, 64, total_width * totalRowCount * sizeof(float)) != 0){
             printf("Error allocating memory for feature map.\n");
             return 1;
         }
 
         // Add zeroes as padding
-        for (int i = 0; i < total_width * total_chunk_size; i++){
+        for (int i = 0; i < total_width * totalRowCount; i++){
             feature_map[i] = 0.0f;
         }
 
         // Extract Feature Map
-        if (extract_data(feature_file, W, chunk_size, padding_width, padding_height, start_index, &feature_map) != 0){
+        if (extract_data(feature_file, W, rowCount, padding_width, padding_height, start_index, &feature_map) != 0){
             printf("Error extracting feature map data from file.\n");
             return 1;
         }
@@ -609,7 +644,7 @@ int main(int argc, char** argv) {
     
     // This is how many times a convolution takes place over each row/col. Also used to determine output array size.
     const int total_strides_width = TOTAL_STRIDES(W, sW);
-    const int total_strides_height = TOTAL_STRIDES(chunk_size, sH); // TODO: Fix this to work properly. This assumes stride = 1
+    const int total_strides_height = TOTAL_STRIDES(rowCount, sH); // TODO: Fix this to work properly. This assumes stride = 1
 
     // Parallel Convolutions
     if (threads > 1){
@@ -645,7 +680,7 @@ int main(int argc, char** argv) {
 
         double start_time = omp_get_wtime();
 
-        if (conv2d_stride(feature_map, chunk_size, W, kernel, kH, kW, sH, sW, padding_width, padding_height, outputs) != 0){
+        if (conv2d_stride(feature_map, rowCount, W, kernel, kH, kW, sH, sW, padding_width, padding_height, outputs) != 0){
             printf("Error performing serial convolutions.\n");
             return 1;
         }
