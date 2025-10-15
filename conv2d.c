@@ -226,10 +226,6 @@ int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int
     const int total_width = W + w_padding*2;
     const int total_strides_width = TOTAL_STRIDES(W, sW);
 
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-
     // dimensions for convolution window
     const int M = (kH - 1) / 2;
     const int N = (kW - 1) / 2;
@@ -238,24 +234,23 @@ int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int
     // The purpose of this variable is to avoid using outputs that have no valid elements.
     int return_code = 1;
 
-    int iteration = 0;
-
-    #pragma omp parallel for collapse(2) schedule(dynamic, W) firstprivate(iteration)
+    #pragma omp parallel for collapse(2) schedule(dynamic, W)
     for (int n = h_padding; n < total_height - h_padding; n++){
         for (int k = w_padding; k < total_width - w_padding; k=k+sW){
             
             if (( start_index + n-h_padding) % sH != 0){ continue; } // TODO: This might cause bugs with "for collapse()". Need to check.
             long double result = 0.0;
+            //float result = 0.0f;
 
             #pragma omp simd collapse(2) reduction(+:result)
             for (int j = 0; j < kW; j++){
                 for (int i = 0; i < kH; i++){
                     result += (long double)(f[IDX(n + i - M, k + j - N, total_width)]) * (long double)(g[IDX(i, j, kW)]);
+                    //result += f[IDX(n + i - M, k + j - N, total_width)] * g[IDX(i, j, kW)];
                 }
             }
             padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = ROUNDF(result,3);
             return_code = 0;
-            iteration++;
         }
     }
     return return_code;
@@ -470,12 +465,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    double average_time = 0.0f;
-    for (int iteration = 0; iteration < max_iterations; iteration++){
-
-    if (multi_benchmark_mode && (feature_file || kernel_file)) { printf("Do not input a file while running multi-benchmark mode.\n"); return 1; }
-
-
 
     // ~~~~~~~~~~~~~~ 3. MPI Initialisation ~~~~~~~~~~~~~~ //
 
@@ -487,6 +476,16 @@ int main(int argc, char** argv) {
     // Get the number of processes
     int world_size;
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+
+
+
+    if (multi_benchmark_mode && (feature_file || kernel_file)) { printf("Do not input a file while running multi-benchmark mode.\n"); return 1; }
+
+    double average_time = 0.0f;
+    for (int iteration = 0; iteration < max_iterations; iteration++){
+
+    
+
 
 
 
@@ -797,10 +796,11 @@ int main(int argc, char** argv) {
     
     if (feature_map != NULL) {free(feature_map); feature_map = NULL; }
     if (kernel != NULL) {free(kernel); kernel = NULL; }
-    MPI_Finalize();
     
 
     } // End of loop for multi_benchmark_mode
+
+    MPI_Finalize();
 
     if (multi_benchmark_mode == 1) {printf("Average Time:   %f\n", average_time/max_iterations);}
 
