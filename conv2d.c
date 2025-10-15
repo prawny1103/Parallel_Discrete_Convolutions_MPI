@@ -151,7 +151,6 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 }
 
 
-
 /* 
 * Performs Parallel 2D discrete convolutions. 
 * @param f              Pointer to the Feature Map.
@@ -172,6 +171,8 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
 
     const int total_height = H + h_padding*2;
     const int total_width = W + w_padding*2;
+    const int n_end = total_height - h_padding;
+    const int k_end = total_width - w_padding;
     const int total_strides_width = TOTAL_STRIDES(W, sW);
 
     // dimensions for convolution window
@@ -181,25 +182,35 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error. 
     // The purpose of this variable is stop processes from outputting no valid elements because there aren't enough rows for the number of processes.
     // Additionally, it is fully intended that this variable is shared amongst threads because if even one thread contains valid data, we should output it.
-    int return_code = 1;
+    _Bool return_code = 1;
 
     #pragma omp parallel for collapse(2) schedule(dynamic, W)
-    for (int n = h_padding; n < total_height - h_padding; n++){
-        for (int k = w_padding; k < total_width - w_padding; k=k+sW){
+    for (int n = h_padding; n < n_end; n++){    // TODO: The two outer loops can be unwrapped into one loop (because it iterates over the 1d feature map array)
+        for (int k = w_padding; k < k_end; k=k+sW){
             
-            if (( start_index + n-h_padding) % sH != 0){ continue; } // TODO: This might cause bugs with "for collapse()". Need to check.
-            long double result = 0.0;
-            //float result = 0.0f;
+            if (( start_index + n-h_padding) % sH != 0){ continue; }    // TODO: This might cause bugs with "for collapse()". Need to check.
+            double result = 0.0;
 
+            // Convolution calculation. Iterates over the kernel
             #pragma omp simd collapse(2) reduction(+:result)
-            for (int j = 0; j < kW; j++){
+            for (int j = 0; j < kW; j++){       // TODO: The two inner loops can be unwrapped into one loop (because it iterates over the 1d kernel)
                 for (int i = 0; i < kH; i++){
-                    result += (long double)(f[IDX(n + i - M, k + j - N, total_width)]) * (long double)(g[IDX(i, j, kW)]);
-                    //result += f[IDX(n + i - M, k + j - N, total_width)] * g[IDX(i, j, kW)];
+                    result += (double)(f[IDX(n + i - M, k + j - N, total_width)]) * (double)(g[IDX(i, j, kW)]);
                 }
             }
-            padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = ROUNDF(result,3);
+            padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = result;
             return_code = 0;
+
+
+            /*TODO: I'm thinking that, once we unwrap the inner loop, we might be able to parallelize it without SIMD. 
+                    Maybe we can use nested parallelism instead of SIMD, so we do something like:
+                        #pragma omp parallel for collapse(2) reduction(+:result)
+                    This might end up being faster than SIMD.
+
+                    However, we could also potentially implement our own SIMD architecture. 
+                    Ideas:
+                        - A function that takes a point in memory and sums it with the next N locations in memory (assuming same size).
+            */
         }
     }
     return return_code;
@@ -243,9 +254,9 @@ int write_data_to_file(char* filepath, float* outputs, float_array padded_output
 
             // Depending if paralleism is enabled or not, print the outputs
             if (outputs != NULL){
-                fprintf(file_ptr, "%0.3f ", outputs[IDX(i-h_padding, j-w_padding, width)]);
+                fprintf(file_ptr, "%0.3f ", ROUNDF(outputs[IDX(i-h_padding, j-w_padding, width)], 3));
             } else if (padded_outputs.arr != NULL){
-                fprintf(file_ptr, "%0.3f ", padded_outputs.arr[IDX(i-h_padding, j-w_padding, width)]);
+                fprintf(file_ptr, "%0.3f ", ROUNDF(padded_outputs.arr[IDX(i-h_padding, j-w_padding, width)],3));
             } else { return 1; }
             
         }
@@ -291,6 +302,8 @@ int main(int argc, char** argv) {
     // 5. Serial Convolutions / Parallel Convolutions
     // 6. Write to Output
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+
+
 
     // ~~~~~~~~~~~~~~~ 1. Argument Extraction ~~~~~~~~~~~~~~ //
 
@@ -389,35 +402,11 @@ int main(int argc, char** argv) {
     }
 
 
-    // ~~~~~~~~~~~~~~~ 2. Error Handling ~~~~~~~~~~~~~~ //
 
-    if (benchmark_mode) { 
-        if (threads > 1){
-            printf("Beginning Parallel Convolutions with %d threads...\n", threads);
-        } else {
-            printf("Beginning Serial Convolutions...\n");
-        }
-    };
+    // ~~~~~~~~~~~~~~ MPI Initialisation ~~~~~~~~~~~~~~ //
 
-    // Error handling
-
-    if (H < 0 || W < 0 || kH < 0 || kW < 0 || threads < 1 || max_iterations < 1){
-        printf("Please provide only positive integers for dimensions and threads.\n");
-        return 1;
-    }
-    if (H == 0 && W == 0 && feature_file == NULL){
-        printf("Please provide either a feature map file or dimensions to generate one.\n");
-        return 1;
-    }
-    if (kH == 0 && kW == 0 && kernel_file == NULL){
-        printf("Please provide either a kernel file or dimensions to generate one.\n");
-        return 1;
-    }
-
-
-    // ~~~~~~~~~~~~~~ 3. MPI Initialisation ~~~~~~~~~~~~~~ //
-
-    MPI_Init(&argc, &argv); 
+    int provided;
+    MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &provided);
 
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -427,9 +416,45 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
 
+    #pragma omp parallel
+    {
+        printf("This is thread #%d, hello other threads!\n", omp_get_thread_num());
+    }
 
-    if (multi_benchmark_mode && (feature_file || kernel_file)) { printf("Do not input a file while running multi-benchmark mode.\n"); return 1; }
 
+    // ~~~~~~~~~~~~~~~ Error Handling ~~~~~~~~~~~~~~ //
+
+    if (rank == 0){
+        if (benchmark_mode) { 
+            if (threads > 1){ printf("Beginning Parallel Convolutions across %d processes with %d threads...\n", world_size, threads);} 
+            else { printf("Beginning Serial Convolutions across %d processes...\n", world_size); }
+        }
+        if (H < 0 || W < 0 || kH < 0 || kW < 0 || threads < 1 || max_iterations < 1){
+            printf("Please provide only positive integers for dimensions and threads.\n");
+            MPI_Finalize();
+            return 1;
+        }
+        if (H == 0 && W == 0 && feature_file == NULL){
+            printf("Please provide either a feature map file or dimensions to generate one.\n");
+            MPI_Finalize();
+            return 1;
+        }
+        if (kH == 0 && kW == 0 && kernel_file == NULL){
+            printf("Please provide either a kernel file or dimensions to generate one.\n");
+            MPI_Finalize();
+            return 1;
+        }
+
+        if (multi_benchmark_mode && (feature_file || kernel_file)) { 
+            printf("Do not input a file while running multi-benchmark mode.\n");
+            MPI_Finalize();
+            return 1;
+        }
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD); 
+
+    
     double average_time = 0.0f;
     for (int iteration = 0; iteration < max_iterations; iteration++){
 
@@ -541,6 +566,7 @@ int main(int argc, char** argv) {
         // Allocating memory
         if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){
             printf("Error allocating memory for feature map.\n");
+            MPI_Finalize();
             return 1;
         }
 
@@ -552,6 +578,7 @@ int main(int argc, char** argv) {
         float* temp_data = NULL;
         if (posix_memalign((void**)&temp_data, 64, W * totalRowCount * sizeof(float)) != 0){
             printf("Error allocating temporary memory for feature map generation.\n");
+            MPI_Finalize();
             return 1;
         }
 
@@ -576,6 +603,7 @@ int main(int argc, char** argv) {
         if (feature_file != NULL){ //TODO: Make Processes all write to the feature file in order. Make them wait.
             if (write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width, 1, W, H) != 0){
                 printf("Error writing feature map to file.\n");
+                MPI_Finalize();
                 return 1;
             }
         }
@@ -587,11 +615,11 @@ int main(int argc, char** argv) {
         // Extract dimensions of the feature map
         if (extract_dimensions(feature_file, &H, &W) != 0){ 
             printf("Error extracting feature map dimensions from file.\n");
+            MPI_Finalize();
             return 1;
         }
 
         const int total_width = W + padding_width*2;
-        // const int total_height = H + padding_height*2;
 
         // Determine the number of rows each process should use in convolutions.
         // This ONLY thinks about the outer loop iterations. The real data size will have padding_height*2 added (because inner loops use more rows)
@@ -607,6 +635,7 @@ int main(int argc, char** argv) {
         // Allocate memory for the feature map of the feature map.
         if (posix_memalign((void**)&feature_map, 64, total_width * totalRowCount * sizeof(float)) != 0){
             printf("Error allocating memory for feature map.\n");
+            MPI_Finalize();
             return 1;
         }
 
@@ -618,6 +647,7 @@ int main(int argc, char** argv) {
         // Extract Feature Map
         if (extract_data(feature_file, W, rowCount, padding_width, padding_height, start_index,/* sW, sH,*/ &feature_map) != 0){
             printf("Error extracting feature map data from file.\n");
+            MPI_Finalize();
             return 1;
         }
 
@@ -627,11 +657,12 @@ int main(int argc, char** argv) {
         
 
     
-    // ~~~~~~~~~~~~~~ 6. Serial Convolutions / Parallel Convolutions ~~~~~~~~~~~~~~ //
+    // ~~~~~~~~~~~~~~ 6. Convolutions ~~~~~~~~~~~~~~ //
     
     // Check if we have all the inputs we need to perform convolutions
     if (kernel == NULL || feature_map == NULL){
         printf("To generate an output, please provide all inputs.\n");
+        MPI_Finalize();
         return 1;
     }
 
@@ -652,6 +683,7 @@ int main(int argc, char** argv) {
 
     if (posix_memalign((void**)&padded_outputs.arr, 64, total_strides_width * total_strides_height * sizeof(float)) != 0){
         printf("Error allocating memory for padded output.\n");
+        MPI_Finalize();
         return 1;
     }
     padded_outputs.padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
@@ -663,18 +695,20 @@ int main(int argc, char** argv) {
         should_write_to_file = 0;
     }
 
-    if (benchmark_mode == 1) { printf("%f\n", (omp_get_wtime() - start_time));}
-    if (multi_benchmark_mode == 1) { average_time += (omp_get_wtime() - start_time); }
+    // Need to wait for every process to be done.
+    MPI_Barrier(MPI_COMM_WORLD);
 
-        
-
+    if (benchmark_mode == 1 && rank == 0) { printf("%f\n", (omp_get_wtime() - start_time));}
+    if (multi_benchmark_mode == 1 && rank == 0) { average_time += (omp_get_wtime() - start_time); }
 
     // ~~~~~~~~~~~~~~ 7. Write to Output ~~~~~~~~~~~~~~ //
 
     if (output_file != NULL){
 
+        // TODO: IMPORTANT, replace all of this with other MPI calls, like Allgather or Gather
+
         // Sync up the total height of the feature map
-        MPI_Barrier(MPI_COMM_WORLD);
+        
         int total_height = total_strides_height;
         if (rank > 0){
             MPI_Recv(&total_height, 1, MPI_INT, rank-1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
@@ -692,7 +726,6 @@ int main(int argc, char** argv) {
         // Create status code for when a process is finished writing to file.
         int finished_code;
 
-        // Process 0 will always 
         if (rank == 0){
             finished_code = write_data_to_file(output_file, NULL, padded_outputs, total_strides_height, total_strides_width, 0, 0, 1, total_strides_width, total_height);
         } else {
@@ -716,12 +749,14 @@ int main(int argc, char** argv) {
     if (feature_map != NULL) {free(feature_map); feature_map = NULL; }
     if (kernel != NULL) {free(kernel); kernel = NULL; }
     
+    // Make sure all processes have finished with this loop, before we start the next one.
+    MPI_Barrier(MPI_COMM_WORLD);
 
     } // End of loop for multi_benchmark_mode
 
-    MPI_Finalize();
+    if (multi_benchmark_mode == 1 && rank == 0) {printf("Average Time:   %f\n", average_time/max_iterations); }
 
-    if (multi_benchmark_mode == 1) {printf("Average Time:   %f\n", average_time/max_iterations);}
+    MPI_Finalize();
 
     return 0;
 }
