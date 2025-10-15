@@ -420,9 +420,6 @@ int main(int argc, char** argv) {
     MPI_Bcast(&featureMapSeed, 1, MPI_LONG, 0, MPI_COMM_WORLD);
 
 
-    printf("Process=%d  seed=%lu\n", rank, featureMapSeed);
-
-
     // ~~~~~~~~~~~~~~~ Error Handling ~~~~~~~~~~~~~~ //
 
     if (rank == 0){
