@@ -184,7 +184,7 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     // Additionally, it is fully intended that this variable is shared amongst threads because if even one thread contains valid data, we should output it.
     _Bool return_code = 1;
 
-    #pragma omp parallel for collapse(2) schedule(static, W)
+    #pragma omp parallel for collapse(2) schedule(static, W) 
     for (int n = h_padding; n < n_end; n++){    // TODO: The two outer loops can be unwrapped into one loop (because it iterates over the 1d feature map array)
         for (int k = w_padding; k < k_end; k=k+sW){
             
@@ -203,7 +203,6 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
             }
             padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = (float)result;
             return_code = 0;
-
 
             /*TODO: I'm thinking that, once we unwrap the inner loop, we might be able to parallelize it without SIMD. 
                     Maybe we can use nested parallelism instead of SIMD, so we do something like:
@@ -413,11 +412,11 @@ int main(int argc, char** argv) {
     int world_size;
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
-
     // Seed for random generation later. This ensures the seed is identical across all processes.
     time_t featureMapSeed;
     if (rank == 0) { featureMapSeed = time(0);}
     MPI_Bcast(&featureMapSeed, 1, MPI_LONG, 0, MPI_COMM_WORLD);
+
 
 
     // ~~~~~~~~~~~~~~~ Error Handling ~~~~~~~~~~~~~~ //
@@ -452,7 +451,6 @@ int main(int argc, char** argv) {
 
     MPI_Barrier(MPI_COMM_WORLD); 
 
-    
     double average_time = 0.0f;
     for (int iteration = 0; iteration < max_iterations; iteration++){
 
@@ -687,7 +685,8 @@ int main(int argc, char** argv) {
     padded_outputs.padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
 
     // Timing begins here, because implementation only starts here.
-    double start_time = omp_get_wtime();
+    MPI_Barrier(MPI_COMM_WORLD); // Make sure all processes start at the same time, for accurate benchmarks.
+    const double start_time = omp_get_wtime();
 
     if (conv2d_stride(feature_map, rowCount, W, kernel, kH, kW, sH, sW, padding_width, padding_height, start_index, padded_outputs) != 0) {
         should_write_to_file = 0;
@@ -696,17 +695,17 @@ int main(int argc, char** argv) {
     // Need to wait for every process to be done.
     MPI_Barrier(MPI_COMM_WORLD);
 
-    if (benchmark_mode == 1 && rank == 0) { printf("%f\n", (omp_get_wtime() - start_time));}
+
+    if (benchmark_mode == 1) { printf("%f\n", (omp_get_wtime() - start_time));}
     if (multi_benchmark_mode == 1 && rank == 0) { average_time += (omp_get_wtime() - start_time); }
 
     // ~~~~~~~~~~~~~~ 7. Write to Output ~~~~~~~~~~~~~~ //
 
     if (output_file != NULL){
 
-        // TODO: IMPORTANT, replace all of this with other MPI calls, like Allgather or Gather
+        // TODO: IMPORTANT, replace all of this with other MPI calls, like MPI_Gather or MPI_Gatherv, or MPI_SUM
 
         // Sync up the total height of the feature map
-        
         int total_height = total_strides_height;
         if (rank > 0){
             MPI_Recv(&total_height, 1, MPI_INT, rank-1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
@@ -752,7 +751,7 @@ int main(int argc, char** argv) {
 
     } // End of loop for multi_benchmark_mode
 
-    if (multi_benchmark_mode == 1 && rank == 0) {printf("Average Time:   %f\n", average_time/max_iterations); }
+    if (multi_benchmark_mode == 1 && rank == 0) {printf("Threads=%d, sH=%d, sW=%d, Average Time:  %0.15f\n", threads, sH, sW, average_time/max_iterations); }
 
     MPI_Finalize();
 
