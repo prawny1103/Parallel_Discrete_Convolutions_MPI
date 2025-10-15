@@ -184,10 +184,13 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     // Additionally, it is fully intended that this variable is shared amongst threads because if even one thread contains valid data, we should output it.
     _Bool return_code = 1;
 
-    #pragma omp parallel for collapse(2) schedule(dynamic, W)
+    #pragma omp parallel for collapse(2) schedule(static, W)
     for (int n = h_padding; n < n_end; n++){    // TODO: The two outer loops can be unwrapped into one loop (because it iterates over the 1d feature map array)
         for (int k = w_padding; k < k_end; k=k+sW){
             
+            //printf("T=%d,   Rcleaow = %d,   Col = %d\n", omp_get_thread_num(), n-h_padding, k-w_padding);
+            
+
             if (( start_index + n-h_padding) % sH != 0){ continue; }    // TODO: This might cause bugs with "for collapse()". Need to check.
             double result = 0.0;
 
@@ -198,7 +201,7 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
                     result += (double)(f[IDX(n + i - M, k + j - N, total_width)]) * (double)(g[IDX(i, j, kW)]);
                 }
             }
-            padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = result;
+            padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = (float)result;
             return_code = 0;
 
 
@@ -309,11 +312,6 @@ int main(int argc, char** argv) {
 
     omp_set_nested(1); // Allow nested parallelism for SIMD
 
-    // Seed for random generation later
-    // TODO: change this to something else, I just did this for testing
-    int featureMapSeed = 12345;
-    // srand(time(0));
-
     // Initialising variables for future use
     int H = 0;                      // -H <int>
     int W = 0;                      // -W <int>
@@ -416,10 +414,13 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
 
-    #pragma omp parallel
-    {
-        printf("This is thread #%d, hello other threads!\n", omp_get_thread_num());
-    }
+    // Seed for random generation later. This ensures the seed is identical across all processes.
+    time_t featureMapSeed;
+    if (rank == 0) { featureMapSeed = time(0);}
+    MPI_Bcast(&featureMapSeed, 1, MPI_LONG, 0, MPI_COMM_WORLD);
+
+
+    printf("Process=%d  seed=%lu\n", rank, featureMapSeed);
 
 
     // ~~~~~~~~~~~~~~~ Error Handling ~~~~~~~~~~~~~~ //
