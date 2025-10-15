@@ -151,58 +151,6 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 }
 
 
-/* 
-* Performs serial 2D discrete convolutions. 
-* @param f              Pointer to the Feature Map.
-* @param H              Height of the Feature Map.
-* @param W              Width of the Feature Map.
-* @param g              Pointer to the Kernel.
-* @param kH             Height of the Kernel.
-* @param kW             Width of the Kernel.
-* @param sH             Stride height.
-* @param sW             Stride width.
-* @param w_padding      Width of the padding in the Feature Map.
-* @param h_padding      Height of the padding in the Feature Map.
-* @param start_index    The starting index location, of index 0 in the local Feature Map, in the original Feature Map.
-                            This is used for calculating stride at runtime, to determine which rows should be skipped.
-* @param output         Pointer to the location where outputs are stored.
-*/
-int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, int start_index, float* output){
-
-    const int total_height = H + h_padding*2;
-    const int total_width = W + w_padding*2;
-    const int total_strides_width = TOTAL_STRIDES(W, sW);
-
-    // dimensions for convolution window
-    const int M = (kH - 1) / 2;
-    const int N = (kW - 1) / 2;
-
-    // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error.
-    // The purpose of this variable is to avoid using outputs that have no valid elements.
-    int return_code = 1;
-
-    // Iterate over every value in the feature map
-    for (int n = h_padding; n < total_height - h_padding; n++){
-        for (int k = w_padding; k < total_width - w_padding; k=k+sW){
-            
-            if (( start_index + n-h_padding) % sH != 0){ continue; } // TODO: This might cause bugs with "for collapse()". Need to check.
-            long double result = 0.0;
-
-            // Iterate over every value in the kernel
-            for (int j = 0; j < kW; j++){
-                for (int i = 0; i < kH; i++){
-                    result += (long double)(f[IDX(n + i - M, k + j - N, total_width)]) * (long double)(g[IDX(i, j, kW)]);
-                }
-            }
-
-            // Debugging prints for specific values of n and k. These are the values that tend to break things.
-            output[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = ROUNDF(result, 3);
-            return_code = 0;
-        }
-    }
-    return return_code;
-}
-
 
 /* 
 * Performs Parallel 2D discrete convolutions. 
@@ -220,7 +168,7 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
                             This is used for calculating stride at runtime, to determine which rows should be skipped.
 * @param padded_output  Location where outputs are stored.
 */
-int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, int start_index, float_array padded_output){
+int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, int start_index, float_array padded_output){
 
     const int total_height = H + h_padding*2;
     const int total_width = W + w_padding*2;
@@ -230,8 +178,9 @@ int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int
     const int M = (kH - 1) / 2;
     const int N = (kW - 1) / 2;
 
-    // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error.
-    // The purpose of this variable is to avoid using outputs that have no valid elements.
+    // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error. 
+    // The purpose of this variable is stop processes from outputting no valid elements because there aren't enough rows for the number of processes.
+    // Additionally, it is fully intended that this variable is shared amongst threads because if even one thread contains valid data, we should output it.
     int return_code = 1;
 
     #pragma omp parallel for collapse(2) schedule(dynamic, W)
@@ -260,7 +209,7 @@ int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int
 /*
 Writes outputs to a file.
 @param filepath             The filepath of where to find/put the output file.
-@param outputs              A 2d array of float32s. This is what is written to the file for serial convolutions.
+@param outputs              A 2d array of float32s. This is used only for kernel/feature map writing.
 @param padded_outputs       A padded 2d array of float32s. This is written to the file, instead of `outputs`, when outputting data from a parallel convolution.
 @param height               The height of the outputs.
 @param width                The width of the outputs.
@@ -673,15 +622,7 @@ int main(int argc, char** argv) {
         }
 
 
-        // Used for debugging to check if the feature is being extracted properly. TODO: Remove
-        
-        if (rank == 0) {
-            write_data_to_file("f_rank0.txt", feature_map, (float_array){0}, totalRowCount, total_width, padding_height, padding_width, 1, W, rowCount);
-        }
-        if (rank == 1) {
-            write_data_to_file("f_rank1.txt", feature_map, (float_array){0}, totalRowCount, total_width, padding_height, padding_width, 1, W, rowCount);
-        }
-        
+        // Used for debugging to check if the feature is being extracted properly. TODO: Remove        
     }
         
 
@@ -695,7 +636,7 @@ int main(int argc, char** argv) {
     }
 
     // Defining output pointers
-    float* outputs = NULL;              // Used for serial convolution
+    //float* outputs = NULL;              // Used for serial convolution
     float_array padded_outputs = {0};   // Used for parallel convolution
     
     // This is how many times a convolution takes place over each row/col. Also used to determine output array size.
@@ -705,48 +646,26 @@ int main(int argc, char** argv) {
     // Used to determine if a process should write to file. This changes to 0 if an error occurs in the convolutions.
     int should_write_to_file = 1;
 
-    // Parallel Convolutions
-    if (threads > 1){
-        
-        // The size of the array padding. Used to prevent false sharing.
-        // Equal to the number of bytes left over in the cache line containing the final element in float array.
-        const int cache_padding_size = 64 - ((W * sizeof(float)) % 64);
+    // The size of the array padding. Used to prevent false sharing.
+    // Equal to the number of bytes left over in the cache line containing the final element in float array.
+    const int cache_padding_size = 64 - ((W * sizeof(float)) % 64);
 
-        if (posix_memalign((void**)&padded_outputs.arr, 64, total_strides_width * total_strides_height * sizeof(float)) != 0){
-            printf("Error allocating memory for padded output.\n");
-            return 1;
-        }
-        padded_outputs.padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
-
-        // Timing begins here, because implementation only starts here.
-        double start_time = omp_get_wtime();
-
-        if (parallel_conv2d_stride(feature_map, rowCount, W, kernel, kH, kW, sH, sW, padding_width, padding_height, start_index, padded_outputs) != 0) {
-            should_write_to_file = 0;
-        }
-
-        if (benchmark_mode == 1) { printf("%f\n", (omp_get_wtime() - start_time));}
-        if (multi_benchmark_mode == 1) { average_time += (omp_get_wtime() - start_time); }
-        
-    // Serial Convolutions
-    } else {
-
-        if (posix_memalign((void**)&outputs, 64, total_strides_width * total_strides_height * sizeof(float)) != 0){
-            printf("Error allocating memory for outputs.\n");
-            return 1;
-        }
-
-        double start_time = omp_get_wtime();
-
-        if (conv2d_stride(feature_map, rowCount, W, kernel, kH, kW, sH, sW, padding_width, padding_height, start_index, outputs) != 0){
-            should_write_to_file = 0;
-        }
-
-        // Benchmarking
-        if (benchmark_mode == 1) {printf("%f\n", (omp_get_wtime() - start_time)); }
-        if (multi_benchmark_mode == 1) { average_time += (omp_get_wtime() - start_time); }
+    if (posix_memalign((void**)&padded_outputs.arr, 64, total_strides_width * total_strides_height * sizeof(float)) != 0){
+        printf("Error allocating memory for padded output.\n");
+        return 1;
     }
-        
+    padded_outputs.padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
+
+    // Timing begins here, because implementation only starts here.
+    double start_time = omp_get_wtime();
+
+    if (conv2d_stride(feature_map, rowCount, W, kernel, kH, kW, sH, sW, padding_width, padding_height, start_index, padded_outputs) != 0) {
+        should_write_to_file = 0;
+    }
+
+    if (benchmark_mode == 1) { printf("%f\n", (omp_get_wtime() - start_time));}
+    if (multi_benchmark_mode == 1) { average_time += (omp_get_wtime() - start_time); }
+
         
 
 
@@ -775,11 +694,11 @@ int main(int argc, char** argv) {
 
         // Process 0 will always 
         if (rank == 0){
-            finished_code = write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0, 1, total_strides_width, total_height);
+            finished_code = write_data_to_file(output_file, NULL, padded_outputs, total_strides_height, total_strides_width, 0, 0, 1, total_strides_width, total_height);
         } else {
             MPI_Recv(&finished_code, 1, MPI_INT, rank-1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             if (finished_code == 0 && should_write_to_file == 1){
-                finished_code = write_data_to_file(output_file, outputs, padded_outputs, total_strides_height, total_strides_width, 0, 0, 0, 0, 0); // Does not append dimensions
+                finished_code = write_data_to_file(output_file, NULL, padded_outputs, total_strides_height, total_strides_width, 0, 0, 0, 0, 0); // Does not append dimensions
             }
         }
 
@@ -788,7 +707,7 @@ int main(int argc, char** argv) {
         }
 
         // Free any remaining memory
-        if (outputs != NULL) {free(outputs); outputs = NULL;}
+        //if (outputs != NULL) {free(outputs); outputs = NULL;}
         if (padded_outputs.arr != NULL) { free(padded_outputs.arr); padded_outputs.arr = NULL; }
         if (padded_outputs.padding != NULL) { free(padded_outputs.padding); padded_outputs.padding = NULL;}
 
