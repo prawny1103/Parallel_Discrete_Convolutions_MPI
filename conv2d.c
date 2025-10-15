@@ -226,6 +226,10 @@ int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int
     const int total_width = W + w_padding*2;
     const int total_strides_width = TOTAL_STRIDES(W, sW);
 
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+
     // dimensions for convolution window
     const int M = (kH - 1) / 2;
     const int N = (kW - 1) / 2;
@@ -234,10 +238,12 @@ int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int
     // The purpose of this variable is to avoid using outputs that have no valid elements.
     int return_code = 1;
 
-    #pragma omp parallel for collapse(2) schedule(dynamic, total_width)
+    int iteration = 0;
+
+    #pragma omp parallel for collapse(2) schedule(dynamic, W) firstprivate(iteration)
     for (int n = h_padding; n < total_height - h_padding; n++){
         for (int k = w_padding; k < total_width - w_padding; k=k+sW){
-
+            
             if (( start_index + n-h_padding) % sH != 0){ continue; } // TODO: This might cause bugs with "for collapse()". Need to check.
             long double result = 0.0;
 
@@ -249,6 +255,7 @@ int parallel_conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int
             }
             padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = ROUNDF(result,3);
             return_code = 0;
+            iteration++;
         }
     }
     return return_code;
@@ -666,12 +673,16 @@ int main(int argc, char** argv) {
             return 1;
         }
 
+
+        // Used for debugging to check if the feature is being extracted properly. TODO: Remove
+        
         if (rank == 0) {
-            write_data_to_file("f4_rank0.txt", feature_map, (float_array){0}, totalRowCount, total_width, padding_height, padding_width, 1, W, rowCount);
+            write_data_to_file("f_rank0.txt", feature_map, (float_array){0}, totalRowCount, total_width, padding_height, padding_width, 1, W, rowCount);
         }
         if (rank == 1) {
-            write_data_to_file("f4_rank1.txt", feature_map, (float_array){0}, totalRowCount, total_width, padding_height, padding_width, 1, W, rowCount);
+            write_data_to_file("f_rank1.txt", feature_map, (float_array){0}, totalRowCount, total_width, padding_height, padding_width, 1, W, rowCount);
         }
+        
     }
         
 
@@ -711,9 +722,8 @@ int main(int argc, char** argv) {
         // Timing begins here, because implementation only starts here.
         double start_time = omp_get_wtime();
 
-        if (parallel_conv2d_stride(feature_map, H, W, kernel, kH, kW, sH, sW, padding_width, padding_height, start_index, padded_outputs) != 0) {
-            printf("Error performing parallel convolutions.\n");
-            return 1;
+        if (parallel_conv2d_stride(feature_map, rowCount, W, kernel, kH, kW, sH, sW, padding_width, padding_height, start_index, padded_outputs) != 0) {
+            should_write_to_file = 0;
         }
 
         if (benchmark_mode == 1) { printf("%f\n", (omp_get_wtime() - start_time));}
