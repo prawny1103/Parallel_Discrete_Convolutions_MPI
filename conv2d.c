@@ -183,25 +183,31 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, int start_index, float_array padded_output){
 
     //const long total_height = H + h_padding*2;
-    const long total_width  = W + w_padding*2;
+    //const long total_width  = W + w_padding*2;
     //const long n_end = total_height - h_padding;
     //const long k_end = total_width - w_padding;
-    const long total_strides_width = TOTAL_STRIDES(W, sW);
-    const long total_strides_height = TOTAL_STRIDES(H, sH);
+    //const long total_strides_width = TOTAL_STRIDES(W, sW);
+    //const long total_strides_height = TOTAL_STRIDES(H, sH);
     //const long pH2 = h_padding * 2;
-    const long pW2 = w_padding * 2;
+    //const long pW2 = w_padding * 2;
     //const long total_w = total_strides_width + pW2;
 
     // NEW VARS
-    const long output_length = total_strides_width * total_strides_height;
-    const long kernel_length = kH * kW;
-    const long total_padded_length = (total_strides_width + h_padding*2) * (total_strides_height + w_padding*2);
+    //const long output_length = total_strides_width * total_strides_height;
+    //const long kernel_length = kH * kW;
+    //const long total_padded_length = (total_strides_width + h_padding*2) * (total_strides_height + w_padding*2);
 
     // dimensions for convolution window
     const long M = (kH - 1) / 2;
     const long N = (kW - 1) / 2;
     // Below is used to determine the last index in the feature map that can be used as a starting point for a convolution.
     //const long conv_start = N - (W * M);
+
+    const long total_strides_width = TOTAL_STRIDES(W, sW);
+    const long total_strides_height = TOTAL_STRIDES(H, sH);
+    const long output_length = total_strides_width * total_strides_height;
+    const long kernel_length = (long)kH * (long)kW;
+
 
     // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error. 
     // The purpose of this variable is stop processes from outputting no valid elements because there aren't enough rows for the number of processes.
@@ -213,82 +219,56 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     double result = 0.0;
 
     #pragma omp parallel for collapse(2) schedule(static, W*kernel_length) firstprivate(result)
-    for (long i = total_width; i < total_padded_length - total_width; i++){      // Need to work out how stride would work...
+    for (long i = 0; i < output_length; i++){      // TODO: Need to work out how stride would work...
         for (long j = 0; j < kernel_length; j++){
 
             // Reset result at the start of every kernel iteration
             if (j == 0) { result = 0.0; }
-            if (i % total_width < w_padding || (i % total_width) >= (total_width - w_padding)) { continue; } // Skip padding
+            //if (i % total_width < w_padding || (i % total_width) >= (total_width - w_padding)) { continue; } // Skip padding
 
             // Calculate where to write the output
-            const long write_pos = IDX_MINUS_PADDING(i, total_strides_width, h_padding, w_padding);
-            
+            const long write_pos = i;//IDX_MINUS_PADDING(i, total_strides_width, h_padding, w_padding);
             if (write_pos < 0 || write_pos >= output_length) { continue; }
 
-            const long read_pos = i-(N+pW2)-(W*M) + (W*(j/kW)) + (pW2*(j/kW)) + (j%kW);
-            if (read_pos < 0 || read_pos % total_width == 0 || read_pos >= total_padded_length ) { continue; }
+            // idk man, here are some debug values
+            int k_col = j % kW;
+            int k_row = j / kW;
 
-            result += (double)(f[read_pos]) * (double)(g[j]);
+            int f_col = (i % total_strides_width);
+            int f_row = (i / total_strides_width);
+
+            int read_col = f_col + k_col - N;
+            int read_row = f_row + k_row - M;
+
+            
+            // Find the position to read from in the feature map
+            const long read_pos = i-N-(W*M) + (W*(j/kW)) + (j%kW);
+
+            // logical padding
+            const float read_value = f[read_pos];
+            if (i == 0){
+                if (read_pos<0 || read_pos>=output_length){ printf("1\n"); ;}
+                if (read_col<0 || read_col>=total_strides_width) { printf("2\n");; }
+                if (read_row<0 || read_row>=total_strides_height) { printf("3\n");; }
+            }
+            if (read_pos<0 || read_pos>=output_length){ ;}
+            if (read_col<0 || read_col>=total_strides_width) { ; }
+            if (read_row<0 || read_row>=total_strides_height) { ; }
+
+            result += (double)(read_value) * (double)(g[j]);
+            if(i == 0){
+                printf("Reading from i=%ld or f=[%d,%d] value %0.3f, kernel index %ld value %0.3f\n", i, read_col, read_row, read_value, j, g[j]);
+            }
+            
             if (j + 1 == kernel_length) {
                 padded_output.arr[write_pos] = (float)result;
                 return_code = 0;
+                //printf("Wrote to index %ld (from read index %ld) value %0.3f\n", write_pos, read_pos, (float)result);
             }
         }
     }
+
     return return_code;
-
-
-    ///////////////// ORIGINAL CODE /////////////////
-
-    /*
-    #pragma omp parallel for collapse(2) schedule(static, W) 
-    for (int n = h_padding; n < n_end; n++){    // TODO: The two outer loops can be unwrapped into one loop (because it iterates over the 1d feature map array)
-        for (int k = w_padding; k < k_end; k=k+sW){
-            if (( start_index + n-h_padding) % sH != 0){ continue; }    // TODO: This might cause bugs with "for collapse()". Need to check.
-            double result = 0.0;
-            #pragma omp simd collapse(2) reduction(+:result)    // Convolution calculation. Iterates over the kernel
-            for (int j = 0; j < kW; j++){       // TODO: The two inner loops can be unwrapped into one loop (because it iterates over the 1d kernel)
-                for (int i = 0; i < kH; i++){
-                    result += (double)(f[IDX(n + i - M, k + j - N, total_width)]) * (double)(g[IDX(i, j, kW)]);
-                }
-            }
-            padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = (float)result;
-            return_code = 0;
-        }
-    }
-    */
-    return return_code;
-
-
-    /*  pseudo code version of the above loops
-
-    double result = 0.0;
-    _Bool return_code = 1;
-    
-    for (long i = 0; i < output_length; i++){      // Need to work out how stride would work...
-        for (long j = 0; j < kernel_length; j++){
-            if (j == 0) { result = 0.0; }
-            result += (double)(f[(i-N-(W*M) + (W*(j/kW)) + (j%kW))]) * (double)(g[j]);
-            if (j == kernel_length - 1) {
-                padded_output.arr[IDX(i/W, i % W, total_strides_width)] = (float)result;
-                return_code = 0;
-            }
-        }
-    }
-    return return_code;
-
-    */
-
-
-    /* TODO: I'm thinking that, once we unwrap the inner loop, we might be able to parallelize it without SIMD. 
-        Maybe we can use nested parallelism instead of SIMD, so we do something like:
-            #pragma omp parallel for collapse(2) reduction(+:result)
-        This might end up being faster than SIMD.
-
-        However, we could also potentially implement our own SIMD architecture. 
-        Ideas:
-            - A function that takes a point in memory and sums it with the next N locations in memory (assuming same size).
-    */
 }
 
 
@@ -552,7 +532,7 @@ int main(int argc, char** argv) {
         generate_data(kH, kW, &kernel, -1);
 
         // If wanting to save inputs, write to kernel file
-        if (kernel_file != NULL){
+        if (kernel_file != NULL && rank == 0){
             int status = write_data_to_file(kernel_file, kernel, (float_array){0}, kH, kW, 0, 0, 1, kW, kH);
             if (status != 0){
                 printf("Error writing kernel to file.\n");
