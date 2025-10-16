@@ -55,6 +55,16 @@ typedef struct {
     char* padding;
 } float_array;
 
+int find_char_count(int number){
+    if (number == 0) { return 1; }
+    int count = 0;
+    if (number < 0) { count++; number = -number; } // For negative sign
+    while (number != 0) {
+        number /= 10;
+        count++;
+    }
+    return count;
+}
 
 /*
 * Extracts the dimensions from a file.
@@ -199,9 +209,6 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     _Bool return_code = 1;
 
     /////////////////   NEW CODE    /////////////////
-
-    printf("h_padding=%d,  w_padding=%d\n", h_padding, w_padding);
-    printf("total_strides_width=%ld\n", total_strides_width);
 
     double result = 0.0;
 
@@ -463,6 +470,7 @@ int main(int argc, char** argv) {
 
 
 
+
     // ~~~~~~~~~~~~~~ MPI Initialisation ~~~~~~~~~~~~~~ //
 
     int provided;
@@ -478,6 +486,8 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
 
+
+
     // ~~~~~~~~~~~~~~~ Error Handling ~~~~~~~~~~~~~~ //
 
     if (rank == 0){
@@ -487,23 +497,23 @@ int main(int argc, char** argv) {
         }
         if (H < 0 || W < 0 || kH < 0 || kW < 0 || threads < 1 || max_iterations < 1){
             printf("Please provide only positive integers for dimensions and threads.\n");
-            MPI_Finalize();
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
         }
         if (H == 0 && W == 0 && feature_file == NULL){
             printf("Please provide either a feature map file or dimensions to generate one.\n");
-            MPI_Finalize();
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
         }
         if (kH == 0 && kW == 0 && kernel_file == NULL){
             printf("Please provide either a kernel file or dimensions to generate one.\n");
-            MPI_Finalize();
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
         }
 
         if (multi_benchmark_mode && (feature_file || kernel_file)) { 
             printf("Do not input a file while running multi-benchmark mode.\n");
-            MPI_Finalize();
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
         }
     }
@@ -585,6 +595,7 @@ int main(int argc, char** argv) {
     int totalRowCount;
 
 
+
     // ~~~~~~~~~~~~~~ 5. Feature Map Generation / Extraction ~~~~~~~~~~~~~~ //
 
     float* feature_map = NULL;
@@ -601,8 +612,8 @@ int main(int argc, char** argv) {
 
         start_index = rank * (H / world_size) + min(rank, (H % world_size));
 
-        const int total_width = W + padding_width*2;
-        const int total_height = H + padding_height*2;
+        //const int total_width = W + padding_width*2;
+        //const int total_height = H + padding_height*2;
 
         // Determine the number of rows each process should use in convolutions.
         rowCount = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
@@ -623,22 +634,15 @@ int main(int argc, char** argv) {
         int startWithOverlap = startRow - overlapBefore;
 
         // Allocating memory
-        if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){     // Originally was total_width * total_height * sizeof(float)
+        if (posix_memalign((void**)&feature_map, 64, W * totalRowCount * sizeof(float)) != 0){     // Originally was total_width * total_height * sizeof(float)
             printf("Error allocating memory for feature map.\n");
-            MPI_Finalize();
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
         }
 
         // Add zeroes
         for (int i = 0; i < W * totalRowCount; i++){
             feature_map[i] = 0.0f;
-        }
-
-        float* temp_data = NULL;
-        if (posix_memalign((void**)&temp_data, 64, W * totalRowCount * sizeof(float)) != 0){
-            printf("Error allocating temporary memory for feature map generation.\n");
-            MPI_Finalize();
-            return 1;
         }
 
         srand(featureMapSeed);
@@ -650,22 +654,71 @@ int main(int argc, char** argv) {
 
         generate_data(totalRowCount, W, &feature_map, featureMapSeed);
 
+
         // If wanting to save inputs, write to feature file
-        if (feature_file != NULL){ //TODO: Make Processes all write to the feature file in order. Make them wait.
-            if (write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width, 1, W, H) != 0){
-                printf("Error writing feature map to file.\n");
-                MPI_Finalize();
+        if (feature_file != NULL){
+
+            // Open the file
+            MPI_File handle;
+            int access_mode = MPI_MODE_CREATE | MPI_MODE_RDWR;
+            if (MPI_File_open(MPI_COMM_WORLD, feature_file, access_mode, MPI_INFO_NULL, &handle) != MPI_SUCCESS) {
+                printf("Process %d, Failure in opening file.\n", rank);
+                MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+            }
+
+            // number of chars in the "H W\n" header
+            int dimensions_offset = find_char_count(H) + 1 + find_char_count(W) + 1; // e.g. "6 6\n"
+
+            // characters per row including trailing space/newline
+            const int line_len = W * FLOAT_STRING_LENGTH + 1;
+            const size_t local_chars = (size_t)line_len * (size_t)rowCount;
+            const size_t buffer_bytes = local_chars + (rank == 0 ? (size_t)dimensions_offset : 0);
+
+            // allocate buffer (bytes)
+            char* buffer;
+            if (posix_memalign((void**)&buffer, 64, buffer_bytes) != 0) {
+                printf("Error allocating memory for feature map buffer.\n");
+                MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
                 return 1;
             }
-        }
 
-        for (int i = 0; i < total_height; i++){
-            for (int j = 0; j < total_width; j++){
-                printf("%0.3f ", ROUNDF(feature_map[IDX(i, j, total_width)], 3));
+            // fill header for rank 0
+            size_t data_start = 0;
+            if (rank == 0) {
+                sprintf(buffer, "%d %d\n", H, W);
+                data_start = (size_t)dimensions_offset;
             }
-            printf("\n");
+
+            // Write only the non-overlap rows belonging to this process:
+            // rows in feature_map that correspond to file are [overlapBefore .. overlapBefore+rowCount-1]
+            for (int i = 0; i < rowCount; i++) {
+                int src_row = overlapBefore + i; // index into feature_map
+                char* row_ptr = buffer + data_start + (size_t)i * line_len;
+                // write each value into row_ptr
+                char* p = row_ptr;
+                for (int j = 0; j < W; j++) {
+                    // ensure we don't overrun the per-value slot; FLOAT_STRING_LENGTH is reserved per value
+                    // use snprintf to be safer with bounds
+                    int written = snprintf(p, FLOAT_STRING_LENGTH + 1, "%0.3f ", ROUNDF(feature_map[IDX(src_row, j, W)], 3));
+                    if (written < 0) written = 0;
+                    p += FLOAT_STRING_LENGTH; // advance fixed slot
+                }
+                // replace trailing slot last char with newline (or append newline at end)
+                row_ptr[line_len - 1] = '\n';
+            }
+
+            // compute file offset: header sits at 0, rank 0 writes header+its chunk at offset 0.
+            // other ranks write starting at dimensions_offset + rank * local_chars
+            MPI_Offset write_offset = (rank == 0) ? 0 : (MPI_Offset)dimensions_offset + (MPI_Offset)rank * (MPI_Offset)local_chars;
+            int write_len = (int)(rank == 0 ? buffer_bytes : local_chars);
+
+            MPI_File_write_at(handle, write_offset, buffer, write_len, MPI_CHAR, MPI_STATUS_IGNORE);
+
+            free(buffer);
+            MPI_File_close(&handle);
         }
 
+        
 
     // Extract Feature Map
     } else if (feature_file != NULL) {
@@ -673,7 +726,7 @@ int main(int argc, char** argv) {
         // Extract dimensions of the feature map
         if (extract_dimensions(feature_file, &H, &W) != 0){ 
             printf("Error extracting feature map dimensions from file.\n");
-            MPI_Finalize();
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
         }
 
@@ -693,7 +746,7 @@ int main(int argc, char** argv) {
         // Allocate memory for the feature map of the feature map.
         if (posix_memalign((void**)&feature_map, 64, total_width * totalRowCount * sizeof(float)) != 0){
             printf("Error allocating memory for feature map.\n");
-            MPI_Finalize();
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
         }
 
@@ -705,7 +758,7 @@ int main(int argc, char** argv) {
         // Extract Feature Map
         if (extract_data(feature_file, W, rowCount, padding_width, padding_height, start_index,/* sW, sH,*/ &feature_map) != 0){
             printf("Error extracting feature map data from file.\n");
-            MPI_Finalize();
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
         }
 
@@ -720,7 +773,7 @@ int main(int argc, char** argv) {
     // Check if we have all the inputs we need to perform convolutions
     if (kernel == NULL || feature_map == NULL){
         printf("To generate an output, please provide all inputs.\n");
-        MPI_Finalize();
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
         return 1;
     }
 
@@ -741,7 +794,7 @@ int main(int argc, char** argv) {
 
     if (posix_memalign((void**)&padded_outputs.arr, 64, total_strides_width * total_strides_height * sizeof(float)) != 0){
         printf("Error allocating memory for padded output.\n");
-        MPI_Finalize();
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
         return 1;
     }
     padded_outputs.padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
