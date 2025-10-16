@@ -33,6 +33,9 @@ character. */
 // Macro for converting 2D indices to 1D index
 #define IDX(row, col, step) ((row) * (step) + (col))
 
+// Macro for a 1D index with padding into a 1D index without padding
+#define IDX_MINUS_PADDING(index, step, pH, pW) ( (index - ((step+pW*2)*pH) - (((index/(step+pW*2))*pW*2)-1)) )
+
 // Macro for finding the total number of strides in a row or column
 #define TOTAL_STRIDES(size, stride) ((size>0) ? (((size-1)/stride) + 1) : (0))
 
@@ -151,7 +154,7 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 }
 
 
-/* 
+/** 
 * Performs Parallel 2D discrete convolutions. 
 * @param f              Pointer to the Feature Map.
 * @param H              Height of the Feature Map.
@@ -169,33 +172,74 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 */
 int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, int start_index, float_array padded_output){
 
-    const int total_height = H + h_padding*2;
-    const int total_width = W + w_padding*2;
-    const int n_end = total_height - h_padding;
-    const int k_end = total_width - w_padding;
-    const int total_strides_width = TOTAL_STRIDES(W, sW);
+    //const long total_height = H + h_padding*2;
+    const long total_width  = W + w_padding*2;
+    //const long n_end = total_height - h_padding;
+    //const long k_end = total_width - w_padding;
+    const long total_strides_width = TOTAL_STRIDES(W, sW);
+    const long total_strides_height = TOTAL_STRIDES(H, sH);
+    //const long pH2 = h_padding * 2;
+    const long pW2 = w_padding * 2;
+    //const long total_w = total_strides_width + pW2;
+
+    // NEW VARS
+    const long output_length = total_strides_width * total_strides_height;
+    const long kernel_length = kH * kW;
+    const long total_padded_length = (total_strides_width + h_padding*2) * (total_strides_height + w_padding*2);
 
     // dimensions for convolution window
-    const int M = (kH - 1) / 2;
-    const int N = (kW - 1) / 2;
+    const long M = (kH - 1) / 2;
+    const long N = (kW - 1) / 2;
+    // Below is used to determine the last index in the feature map that can be used as a starting point for a convolution.
+    //const long conv_start = N - (W * M);
 
     // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error. 
     // The purpose of this variable is stop processes from outputting no valid elements because there aren't enough rows for the number of processes.
     // Additionally, it is fully intended that this variable is shared amongst threads because if even one thread contains valid data, we should output it.
     _Bool return_code = 1;
 
+    /////////////////   NEW CODE    /////////////////
+
+    printf("h_padding=%d,  w_padding=%d\n", h_padding, w_padding);
+    printf("total_strides_width=%ld\n", total_strides_width);
+
+    double result = 0.0;
+
+    #pragma omp parallel for collapse(2) schedule(static, W*kernel_length) firstprivate(result)
+    for (long i = total_width; i < total_padded_length - total_width; i++){      // Need to work out how stride would work...
+        for (long j = 0; j < kernel_length; j++){
+
+            // Reset result at the start of every kernel iteration
+            if (j == 0) { result = 0.0; }
+            if (i % total_width < w_padding || (i % total_width) >= (total_width - w_padding)) { continue; } // Skip padding
+
+            // Calculate where to write the output
+            const long write_pos = IDX_MINUS_PADDING(i, total_strides_width, h_padding, w_padding);
+            
+            if (write_pos < 0 || write_pos >= output_length) { continue; }
+
+            const long read_pos = i-(N+pW2)-(W*M) + (W*(j/kW)) + (pW2*(j/kW)) + (j%kW);
+            if (read_pos < 0 || read_pos % total_width == 0 || read_pos >= total_padded_length ) { continue; }
+
+            result += (double)(f[read_pos]) * (double)(g[j]);
+            if (j + 1 == kernel_length) {
+                padded_output.arr[write_pos] = (float)result;
+                return_code = 0;
+            }
+        }
+    }
+    return return_code;
+
+
+    ///////////////// ORIGINAL CODE /////////////////
+
+    /*
     #pragma omp parallel for collapse(2) schedule(static, W) 
     for (int n = h_padding; n < n_end; n++){    // TODO: The two outer loops can be unwrapped into one loop (because it iterates over the 1d feature map array)
         for (int k = w_padding; k < k_end; k=k+sW){
-            
-            //printf("T=%d,   Rcleaow = %d,   Col = %d\n", omp_get_thread_num(), n-h_padding, k-w_padding);
-            
-
             if (( start_index + n-h_padding) % sH != 0){ continue; }    // TODO: This might cause bugs with "for collapse()". Need to check.
             double result = 0.0;
-
-            // Convolution calculation. Iterates over the kernel
-            #pragma omp simd collapse(2) reduction(+:result)
+            #pragma omp simd collapse(2) reduction(+:result)    // Convolution calculation. Iterates over the kernel
             for (int j = 0; j < kW; j++){       // TODO: The two inner loops can be unwrapped into one loop (because it iterates over the 1d kernel)
                 for (int i = 0; i < kH; i++){
                     result += (double)(f[IDX(n + i - M, k + j - N, total_width)]) * (double)(g[IDX(i, j, kW)]);
@@ -203,19 +247,41 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
             }
             padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = (float)result;
             return_code = 0;
+        }
+    }
+    */
+    return return_code;
 
-            /*TODO: I'm thinking that, once we unwrap the inner loop, we might be able to parallelize it without SIMD. 
-                    Maybe we can use nested parallelism instead of SIMD, so we do something like:
-                        #pragma omp parallel for collapse(2) reduction(+:result)
-                    This might end up being faster than SIMD.
 
-                    However, we could also potentially implement our own SIMD architecture. 
-                    Ideas:
-                        - A function that takes a point in memory and sums it with the next N locations in memory (assuming same size).
-            */
+    /*  pseudo code version of the above loops
+
+    double result = 0.0;
+    _Bool return_code = 1;
+    
+    for (long i = 0; i < output_length; i++){      // Need to work out how stride would work...
+        for (long j = 0; j < kernel_length; j++){
+            if (j == 0) { result = 0.0; }
+            result += (double)(f[(i-N-(W*M) + (W*(j/kW)) + (j%kW))]) * (double)(g[j]);
+            if (j == kernel_length - 1) {
+                padded_output.arr[IDX(i/W, i % W, total_strides_width)] = (float)result;
+                return_code = 0;
+            }
         }
     }
     return return_code;
+
+    */
+
+
+    /* TODO: I'm thinking that, once we unwrap the inner loop, we might be able to parallelize it without SIMD. 
+        Maybe we can use nested parallelism instead of SIMD, so we do something like:
+            #pragma omp parallel for collapse(2) reduction(+:result)
+        This might end up being faster than SIMD.
+
+        However, we could also potentially implement our own SIMD architecture. 
+        Ideas:
+            - A function that takes a point in memory and sums it with the next N locations in memory (assuming same size).
+    */
 }
 
 
@@ -272,11 +338,11 @@ int write_data_to_file(char* filepath, float* outputs, float_array padded_output
 }
 
 
-/*
-Generates a 2d array of random floats.
-@param height   The height of the array.
-@param width    The width of the array.
-@param output   The location where the generated data will be stored.
+/**
+* @brief Generates a 2d array of random floats.
+* @param height   The height of the array.
+* @param width    The width of the array.
+* @param output   The location where the generated data will be stored.
 */
 int generate_data(int height, int width, float* *output, int seed){
 
@@ -285,10 +351,8 @@ int generate_data(int height, int width, float* *output, int seed){
         srand(rand());
     }
     
-    for (int i=0; i<height; i++){
-        for (int j=0; j<width; j++){
-            (*output)[IDX(i,j,width)] = (float)rand() / (float)RAND_MAX;
-        }
+    for (int i=0; i< height * width; i++){
+        (*output)[i] = (float)rand() / (float)RAND_MAX;
     }
     return 0;
 }
@@ -312,7 +376,7 @@ int main(int argc, char** argv) {
     omp_set_nested(1); // Allow nested parallelism for SIMD
 
     // Initialising variables for future use
-    int H = 0;                      // -H <int>
+    int H = 0;                      // @brief -H <int> @details Height of the input feature map.
     int W = 0;                      // -W <int>
     int kH = 0;                     // -kH <int>
     int kW = 0;                     // -kW <int>
@@ -321,13 +385,12 @@ int main(int argc, char** argv) {
     char* feature_file = NULL;      // -f <path>
     char* kernel_file = NULL;       // -g <path>
     char* output_file = NULL;       // -o <path>
+    int threads = 1;                // -t <threads>
 
     // DEBUG FLAGS
     int benchmark_mode = 0;         // -b
     int multi_benchmark_mode = 0;   // -mb <max_iterations>
     int max_iterations = 1;             // Used by multi_benchmark_mode to run the code multiple times, getting an average.
-    int threads = 1;                // -t <threads>
-    
 
     // Extract arguments into their variables
     for (int i = 1; i < argc; i++) {
@@ -475,6 +538,7 @@ int main(int argc, char** argv) {
             return 1;
         }
 
+        // Generates a random kernel. 
         generate_data(kH, kW, &kernel, -1);
 
         // If wanting to save inputs, write to kernel file
@@ -559,14 +623,14 @@ int main(int argc, char** argv) {
         int startWithOverlap = startRow - overlapBefore;
 
         // Allocating memory
-        if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){
+        if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){     // Originally was total_width * total_height * sizeof(float)
             printf("Error allocating memory for feature map.\n");
             MPI_Finalize();
             return 1;
         }
 
-        // Add zeroes as padding
-        for (int i = 0; i < total_width * totalRowCount; i++){
+        // Add zeroes
+        for (int i = 0; i < W * totalRowCount; i++){
             feature_map[i] = 0.0f;
         }
 
@@ -584,15 +648,7 @@ int main(int argc, char** argv) {
             rand();
         }
 
-        generate_data(totalRowCount, W, &temp_data, featureMapSeed);
-
-        for (int i = 0; i < totalRowCount; i++) {
-            for (int j = 0; j < W; j++) {
-                feature_map[IDX(i, j + padding_width, total_width)] = temp_data[IDX(i, j, W)];
-            }
-        }
-
-        free(temp_data);
+        generate_data(totalRowCount, W, &feature_map, featureMapSeed);
 
         // If wanting to save inputs, write to feature file
         if (feature_file != NULL){ //TODO: Make Processes all write to the feature file in order. Make them wait.
@@ -601,6 +657,13 @@ int main(int argc, char** argv) {
                 MPI_Finalize();
                 return 1;
             }
+        }
+
+        for (int i = 0; i < total_height; i++){
+            for (int j = 0; j < total_width; j++){
+                printf("%0.3f ", ROUNDF(feature_map[IDX(i, j, total_width)], 3));
+            }
+            printf("\n");
         }
 
 

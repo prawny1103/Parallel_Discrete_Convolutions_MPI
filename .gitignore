@@ -46,3 +46,7 @@ conv2d
 *.py
 *.slurm
 test*
+
+# Execution files
+*.out
+run
