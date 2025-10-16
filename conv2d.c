@@ -403,7 +403,9 @@ int main(int argc, char** argv) {
     // ~~~~~~~~~~~~~~ MPI Initialisation ~~~~~~~~~~~~~~ //
 
     int provided;
-    MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &provided);
+    // MPI_THREAD_MULTIPLE
+    // MPI_THREAD_FUNNELED
+    MPI_Init_thread(NULL, NULL, MPI_THREAD_FUNNELED, &provided);
 
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -411,12 +413,6 @@ int main(int argc, char** argv) {
     // Get the number of processes
     int world_size;
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-
-    // Seed for random generation later. This ensures the seed is identical across all processes.
-    time_t featureMapSeed;
-    if (rank == 0) { featureMapSeed = time(0);}
-    MPI_Bcast(&featureMapSeed, 1, MPI_LONG, 0, MPI_COMM_WORLD);
-
 
 
     // ~~~~~~~~~~~~~~~ Error Handling ~~~~~~~~~~~~~~ //
@@ -454,7 +450,10 @@ int main(int argc, char** argv) {
     double average_time = 0.0f;
     for (int iteration = 0; iteration < max_iterations; iteration++){
 
-    
+    // Seed for random generation later. This ensures the seed is identical across all processes.
+    time_t featureMapSeed;
+    if (rank == 0) { featureMapSeed = time(0);}
+    MPI_Bcast(&featureMapSeed, 1, MPI_LONG, 0, MPI_COMM_WORLD);
 
 
 
@@ -696,7 +695,7 @@ int main(int argc, char** argv) {
     MPI_Barrier(MPI_COMM_WORLD);
 
 
-    if (benchmark_mode == 1) { printf("%f\n", (omp_get_wtime() - start_time));}
+    if (benchmark_mode == 1 && rank == 0) { printf("%f\n", (omp_get_wtime() - start_time));}
     if (multi_benchmark_mode == 1 && rank == 0) { average_time += (omp_get_wtime() - start_time); }
 
     // ~~~~~~~~~~~~~~ 7. Write to Output ~~~~~~~~~~~~~~ //
