@@ -182,26 +182,14 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 */
 int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int sW, int w_padding, int h_padding, int start_index, float_array padded_output){
 
-    //const long total_height = H + h_padding*2;
-    //const long total_width  = W + w_padding*2;
-    //const long n_end = total_height - h_padding;
-    //const long k_end = total_width - w_padding;
-    //const long total_strides_width = TOTAL_STRIDES(W, sW);
-    //const long total_strides_height = TOTAL_STRIDES(H, sH);
-    //const long pH2 = h_padding * 2;
-    //const long pW2 = w_padding * 2;
-    //const long total_w = total_strides_width + pW2;
-
-    // NEW VARS
-    //const long output_length = total_strides_width * total_strides_height;
-    //const long kernel_length = kH * kW;
-    //const long total_padded_length = (total_strides_width + h_padding*2) * (total_strides_height + w_padding*2);
-
     // dimensions for convolution window
-    const long M = (kH - 1) / 2;
-    const long N = (kW - 1) / 2;
-    // Below is used to determine the last index in the feature map that can be used as a starting point for a convolution.
-    //const long conv_start = N - (W * M);
+    const long M_top = (kH - 1) / 2;
+    const long M_bot = kH%2==0 ? M_top+1 : M_top;
+
+    const long N_left = (kW - 1) / 2;
+    const long N_right = kW%2==0 ? N_left+1 : N_left;
+
+    printf("M=[%ld,%ld], N=[%ld,%ld]\n", M_top, M_bot, N_left, N_right);
 
     const long total_strides_width = TOTAL_STRIDES(W, sW);
     const long total_strides_height = TOTAL_STRIDES(H, sH);
@@ -218,53 +206,61 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
 
     double result = 0.0;
 
-    #pragma omp parallel for collapse(2) schedule(static, W*kernel_length) firstprivate(result)
+    // for (int i = 0; i < H; i++){
+    //     for (int j = 0; j < W; j++){
+    //         printf("%0.3f ", f[IDX(i,j,W)]);
+    //     }
+    //     printf("\n");
+    // }
+
+    /* Chunk size = row_width * (kernel_length + 1)
+    Iterations being (length + 1) is because we add an extra iteration to the end to write the output, allowing us to freely skip all prior iterations if need be.
+    TODO: If performance drags dramtically with larger kernels, we need to consider splitting up the work across threads/processes for each individual convolution. This'd be hard */
+
+    #pragma omp parallel for collapse(2) schedule(static, W*(kernel_length+1)) firstprivate(result)
     for (long i = 0; i < output_length; i++){      // TODO: Need to work out how stride would work...
-        for (long j = 0; j < kernel_length; j++){
+        for (long j = 0; j < kernel_length + 1; j++){
 
             // Reset result at the start of every kernel iteration
             if (j == 0) { result = 0.0; }
-            //if (i % total_width < w_padding || (i % total_width) >= (total_width - w_padding)) { continue; } // Skip padding
 
-            // Calculate where to write the output
-            const long write_pos = i;//IDX_MINUS_PADDING(i, total_strides_width, h_padding, w_padding);
-            if (write_pos < 0 || write_pos >= output_length) { continue; }
+            if (j == kernel_length) {
+                padded_output.arr[i] = (float)result;
+                return_code = 0;
+                continue;
+            }
 
             // idk man, here are some debug values
-            int k_col = j % kW;
-            int k_row = j / kW;
+            const int k_col = j % kW;
+            const int k_row = j / kW;
 
-            int f_col = (i % total_strides_width);
-            int f_row = (i / total_strides_width);
+            const int f_col = (i % total_strides_width);
+            const int f_row = (i / total_strides_width);
 
-            int read_col = f_col + k_col - N;
-            int read_row = f_row + k_row - M;
-
-            
             // Find the position to read from in the feature map
-            const long read_pos = i-N-(W*M) + (W*(j/kW)) + (j%kW);
+            const long read_pos = i-N_left-(W*M_top) + (W*(j/kW)) + (j%kW);
+            float read_value = f[read_pos];
+
+            // if (i == 1){
+            //     if (f_col - N_left < 0 && k_col < N_left) { printf("Skipped pos [%ld],  Left\n", read_pos); continue; }
+            //     if (f_col + N_right >= W && k_col > N_left) { printf("Skipped pos [%ld],  Right\n", read_pos); continue; }
+            //     if (f_row - M_top < 0 && k_row < M_top) { printf("Skipped pos [%ld],  Top\n", read_pos); continue; }
+            //     if (f_row + M_bot >= H && k_row > M_top) { printf("Skipped pos [%ld],  Bot\n", read_pos); continue; }
+            // }
+            
 
             // logical padding
-            const float read_value = f[read_pos];
-            if (i == 0){
-                if (read_pos<0 || read_pos>=output_length){ printf("1\n"); ;}
-                if (read_col<0 || read_col>=total_strides_width) { printf("2\n");; }
-                if (read_row<0 || read_row>=total_strides_height) { printf("3\n");; }
-            }
-            if (read_pos<0 || read_pos>=output_length){ ;}
-            if (read_col<0 || read_col>=total_strides_width) { ; }
-            if (read_row<0 || read_row>=total_strides_height) { ; }
+            if (f_col - N_left < 0 && k_col < N_left) continue;     // left
+            if (f_col + N_right >= W && k_col > N_left) continue;  // right
+            if (f_row - M_top < 0 && k_row < M_top) continue;       // top
+            if (f_row + M_bot >= H && k_row > M_top) continue;      // bottom
+
+            // if (i == 1){
+            //     printf("Actually read pos [%ld], at [%d,%d], as kernel [%d,%d]\n", read_pos, f_row, f_col, k_row, k_col);
+            // }
+            
 
             result += (double)(read_value) * (double)(g[j]);
-            if(i == 0){
-                printf("Reading from i=%ld or f=[%d,%d] value %0.3f, kernel index %ld value %0.3f\n", i, read_col, read_row, read_value, j, g[j]);
-            }
-            
-            if (j + 1 == kernel_length) {
-                padded_output.arr[write_pos] = (float)result;
-                return_code = 0;
-                //printf("Wrote to index %ld (from read index %ld) value %0.3f\n", write_pos, read_pos, (float)result);
-            }
         }
     }
 
@@ -710,40 +706,32 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        const int total_width = W + padding_width*2;
-
         // Determine the number of rows each process should use in convolutions.
-        // This ONLY thinks about the outer loop iterations. The real data size will have padding_height*2 added (because inner loops use more rows)
+        // This ONLY thinks about the outer loop iterations. To get total iterations, multiply this by kernel length.
         rowCount = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
 
         // This just includes padding
         totalRowCount = rowCount + padding_height*2;
         
+        // Tells each process where to start reading from the feature map (to extract only relevant data)
+        start_index = max(0, rank * (H / world_size) + min(rank, (H % world_size)));
 
-        start_index = max(0, rank * (H / world_size) + min(rank, (H % world_size)) - max(0, padding_height-1));
+        // TODO: See if you can use an MPI function for this. Is there something to read data from a file across all processes?
 
 
         // Allocate memory for the feature map of the feature map.
-        if (posix_memalign((void**)&feature_map, 64, total_width * totalRowCount * sizeof(float)) != 0){
+        if (posix_memalign((void**)&feature_map, 64, W * totalRowCount * sizeof(float)) != 0){
             printf("Error allocating memory for feature map.\n");
             MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
         }
 
-        // Add zeroes as padding
-        for (int i = 0; i < total_width * totalRowCount; i++){
-            feature_map[i] = 0.0f;
-        }
-
         // Extract Feature Map
-        if (extract_data(feature_file, W, rowCount, padding_width, padding_height, start_index,/* sW, sH,*/ &feature_map) != 0){
+        if (extract_data(feature_file, W, rowCount, 0, 0, start_index, &feature_map) != 0){
             printf("Error extracting feature map data from file.\n");
             MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
-        }
-
-
-        // Used for debugging to check if the feature is being extracted properly. TODO: Remove        
+        }    
     }
         
 
