@@ -183,36 +183,20 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     // The purpose of this variable is stop processes from outputting no valid elements because there aren't enough rows for the number of processes.
     // Additionally, it is fully intended that this variable is shared amongst threads because if even one thread contains valid data, we should output it.
     _Bool return_code = 1;
-
+    
     #pragma omp parallel for collapse(2) schedule(static, W) 
-    for (int n = h_padding; n < n_end; n++){    // TODO: The two outer loops can be unwrapped into one loop (because it iterates over the 1d feature map array)
+    for (int n = h_padding; n < n_end; n++){
         for (int k = w_padding; k < k_end; k=k+sW){
-            
-            //printf("T=%d,   Rcleaow = %d,   Col = %d\n", omp_get_thread_num(), n-h_padding, k-w_padding);
-            
-
-            if (( start_index + n-h_padding) % sH != 0){ continue; }    // TODO: This might cause bugs with "for collapse()". Need to check.
-            double result = 0.0;
-
-            // Convolution calculation. Iterates over the kernel
+            if (( start_index + n-h_padding) % sH != 0){ continue; }
+            float result = 0.0;
             #pragma omp simd collapse(2) reduction(+:result)
-            for (int j = 0; j < kW; j++){       // TODO: The two inner loops can be unwrapped into one loop (because it iterates over the 1d kernel)
-                for (int i = 0; i < kH; i++){
-                    result += (double)(f[IDX(n + i - M, k + j - N, total_width)]) * (double)(g[IDX(i, j, kW)]);
+            for (int i = 0; i < kH; i++){
+                for (int j = 0; j < kW; j++){
+                    result += f[(n+i-M) * (total_width) + (k+j-N)] * g[(i * kW + j)];
                 }
             }
-            padded_output.arr[IDX((n - h_padding)/sH, (k - w_padding)/sW, total_strides_width)] = (float)result;
+            padded_output.arr[((n - h_padding)/sH) * total_strides_width + ((k - w_padding)/sW)] = result;
             return_code = 0;
-
-            /*TODO: I'm thinking that, once we unwrap the inner loop, we might be able to parallelize it without SIMD. 
-                    Maybe we can use nested parallelism instead of SIMD, so we do something like:
-                        #pragma omp parallel for collapse(2) reduction(+:result)
-                    This might end up being faster than SIMD.
-
-                    However, we could also potentially implement our own SIMD architecture. 
-                    Ideas:
-                        - A function that takes a point in memory and sums it with the next N locations in memory (assuming same size).
-            */
         }
     }
     return return_code;
@@ -272,25 +256,41 @@ int write_data_to_file(char* filepath, float* outputs, float_array padded_output
 }
 
 
-/*
-Generates a 2d array of random floats.
-@param height   The height of the array.
-@param width    The width of the array.
-@param output   The location where the generated data will be stored.
+/**
+ * Generates a 2d array of random floats.
+ * @param   height      The height of the array.
+ * @param   width       The width of the array.
+ * @param   h_padding   Height padding. Data will only be written in non-padded rows.
+ * @param   w_padding   Width Padding. Data will only be written in non-padded columns.
+ * @param   output      The location where the generated data will be stored.
 */
-int generate_data(int height, int width, float* *output, int seed){
+int generate_data(int height, int width, int h_padding, int w_padding, float* *output, int seed){
 
     // Make a new random seed. This stops f from being the same as g when the code runs too fast.
     if (seed == -1) {
         srand(rand());
     }
     
-    for (int i=0; i<height; i++){
-        for (int j=0; j<width; j++){
+    for (int i=h_padding; i<height-h_padding; i++){
+        for (int j=w_padding; j<width-w_padding; j++){
             (*output)[IDX(i,j,width)] = (float)rand() / (float)RAND_MAX;
         }
     }
     return 0;
+}
+
+/**
+ * Finds the number of characters in an integer.
+ * @param   number    The integer to find the number of characters in.
+ */
+int find_char_count(int number){
+    int count = 0;
+    if (number == 0) return 1;
+    while (number != 0){
+        number /= 10;
+        count++;
+    }
+    return count;
 }
 
 
@@ -321,12 +321,14 @@ int main(int argc, char** argv) {
     char* feature_file = NULL;      // -f <path>
     char* kernel_file = NULL;       // -g <path>
     char* output_file = NULL;       // -o <path>
+    int threads = 1;                // -t <int>
+    //int padding_option = 0;         // -p <int>
 
     // DEBUG FLAGS
     int benchmark_mode = 0;         // -b
     int multi_benchmark_mode = 0;   // -mb <max_iterations>
     int max_iterations = 1;             // Used by multi_benchmark_mode to run the code multiple times, getting an average.
-    int threads = 1;                // -t <threads>
+
     
 
     // Extract arguments into their variables
@@ -396,6 +398,11 @@ int main(int argc, char** argv) {
             omp_set_num_threads(threads);
             continue;
         }
+        // if (strcmp(argv[i], "-p") == 0){
+        //     if (i + 1 >= argc) { printf("Incorrect usage of -t flag. Please provide a number of threads.\n"); return 1; }
+        //     padding_option = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 0;
+        //     continue;
+        // }
     }
 
 
@@ -452,7 +459,7 @@ int main(int argc, char** argv) {
 
     // Seed for random generation later. This ensures the seed is identical across all processes.
     time_t featureMapSeed;
-    if (rank == 0) { featureMapSeed = time(0);}
+    if (rank == 0) { featureMapSeed = 12345/*time(0)*/;}
     MPI_Bcast(&featureMapSeed, 1, MPI_LONG, 0, MPI_COMM_WORLD);
 
 
@@ -475,7 +482,7 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        generate_data(kH, kW, &kernel, -1);
+        generate_data(kH, kW, 0, 0, &kernel, -1);
 
         // If wanting to save inputs, write to kernel file
         if (kernel_file != NULL){
@@ -570,38 +577,90 @@ int main(int argc, char** argv) {
             feature_map[i] = 0.0f;
         }
 
-        float* temp_data = NULL;
-        if (posix_memalign((void**)&temp_data, 64, W * totalRowCount * sizeof(float)) != 0){
-            printf("Error allocating temporary memory for feature map generation.\n");
-            MPI_Finalize();
-            return 1;
-        }
-
         srand(featureMapSeed);
         
         int values_to_skip = startWithOverlap * W;
         for (int i = 0; i < values_to_skip; i++) {
             rand();
         }
-
-        generate_data(totalRowCount, W, &temp_data, featureMapSeed);
-
-        for (int i = 0; i < totalRowCount; i++) {
-            for (int j = 0; j < W; j++) {
-                feature_map[IDX(i, j + padding_width, total_width)] = temp_data[IDX(i, j, W)];
-            }
+        
+        if (world_size == 1) {
+            // If only one process, generate entire feature map directly
+            generate_data(total_height, total_width, padding_height, padding_width, &feature_map, featureMapSeed);
+        } else {
+            generate_data(totalRowCount, total_width, padding_height, padding_width, &feature_map, featureMapSeed);
         }
-
-        free(temp_data);
-
         // If wanting to save inputs, write to feature file
-        if (feature_file != NULL){ //TODO: Make Processes all write to the feature file in order. Make them wait.
-            if (write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width, 1, W, H) != 0){
-                printf("Error writing feature map to file.\n");
-                MPI_Finalize();
+        if (feature_file != NULL){
+
+            // Open the file
+            MPI_File handle;
+            int access_mode = MPI_MODE_CREATE | MPI_MODE_RDWR;
+            if (MPI_File_open(MPI_COMM_WORLD, feature_file, access_mode, MPI_INFO_NULL, &handle) != MPI_SUCCESS) {
+                printf("Process %d, Failure in opening file.\n", rank);
+                MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+            }
+
+            // number of chars in the "H W\n" header
+            int dimensions_offset = find_char_count(H) + 1 + find_char_count(W) + 1; // e.g. "6 6\n"
+
+            // characters per row including trailing space/newline
+            const int line_len = W * FLOAT_STRING_LENGTH + 1;
+            const size_t local_chars = (size_t)line_len * (size_t)rowCount;
+            const size_t buffer_bytes = local_chars + (rank == 0 ? (size_t)dimensions_offset : 0);
+
+            // allocate buffer (bytes)
+            char* buffer;
+            if (posix_memalign((void**)&buffer, 64, buffer_bytes) != 0) {
+                printf("Error allocating memory for feature map buffer.\n");
+                MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
                 return 1;
             }
+
+            // fill header for rank 0
+            size_t data_start = 0;
+            if (rank == 0) {
+                sprintf(buffer, "%d %d\n", H, W);
+                data_start = (size_t)dimensions_offset;
+            }
+
+            // Write only the non-overlap rows belonging to this process:
+            // rows in feature_map that correspond to file are [overlapBefore .. overlapBefore+rowCount-1]
+            for (int i = 0; i < rowCount; i++) {
+                char* row_ptr = buffer + data_start + (size_t)i * line_len;
+                // write each value into row_ptr
+                char* p = row_ptr;
+                for (int j = 0; j < W; j++) {
+                    // ensure we don't overrun the per-value slot; FLOAT_STRING_LENGTH is reserved per value
+                    // use snprintf to be safer with bounds
+                    int written = snprintf(p, FLOAT_STRING_LENGTH + 1, "%0.3f ", ROUNDF(feature_map[IDX(overlapBefore + i + padding_height, j+padding_width, total_width)], 3));
+                    if (written < 0) written = 0;
+                    p += FLOAT_STRING_LENGTH; // advance fixed slot
+                }
+                // replace trailing slot last char with newline (or append newline at end)
+                row_ptr[line_len - 1] = '\n';
+            }
+
+            // compute file offset: header sits at 0, rank 0 writes header+its chunk at offset 0.
+            // other ranks write starting at dimensions_offset + rank * local_chars
+            MPI_Offset write_offset = (rank == 0) ? 0 : (MPI_Offset)dimensions_offset + (MPI_Offset)rank * (MPI_Offset)local_chars;
+            int write_len = (int)(rank == 0 ? buffer_bytes : local_chars);
+
+            MPI_File_write_at(handle, write_offset, buffer, write_len, MPI_CHAR, MPI_STATUS_IGNORE);
+
+            free(buffer);
+            MPI_File_close(&handle);
         }
+
+
+        // // If wanting to save inputs, write to feature file
+        // if (feature_file != NULL){ //TODO: Make Processes all write to the feature file in order. Make them wait.
+        //     if (write_data_to_file(feature_file, feature_map, (float_array){0}, H, W, padding_height, padding_width, 1, W, H) != 0){
+        //         printf("Error writing feature map to file.\n");
+        //         MPI_Finalize();
+        //         return 1;
+        //     }
+        // }
 
 
     // Extract Feature Map
