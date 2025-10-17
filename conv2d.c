@@ -192,8 +192,9 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     printf("M=[%ld,%ld], N=[%ld,%ld]\n", M_top, M_bot, N_left, N_right);
 
     const long total_strides_width = TOTAL_STRIDES(W, sW);
-    const long total_strides_height = TOTAL_STRIDES(H, sH);
-    const long output_length = total_strides_width * total_strides_height;
+    //const long total_strides_height = TOTAL_STRIDES(H, sH);
+    const long feature_length = H * W;
+    //const long output_length = total_strides_width * total_strides_height;
     const long kernel_length = (long)kH * (long)kW;
 
 
@@ -218,47 +219,43 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     TODO: If performance drags dramtically with larger kernels, we need to consider splitting up the work across threads/processes for each individual convolution. This'd be hard */
 
     #pragma omp parallel for collapse(2) schedule(static, W*(kernel_length+1)) firstprivate(result)
-    for (long i = 0; i < output_length; i++){      // TODO: Need to work out how stride would work...
+    for (long i = 0; i < feature_length; i++){      // TODO: Need to work out how stride would work...
         for (long j = 0; j < kernel_length + 1; j++){
 
+            // Current 2D write position in the feature_map / output array
+            const int f_col = (i % W);
+            const int f_row = (i / W);
+
+            if (f_col % sW != 0 || f_row % sH != 0) { continue; }
+
+            // Current 2D iterative position in the kernel.
+            const int k_col = j % kW;
+            const int k_row = j / kW;
+
+            
             // Reset result at the start of every kernel iteration
             if (j == 0) { result = 0.0; }
 
             if (j == kernel_length) {
-                padded_output.arr[i] = (float)result;
+                padded_output.arr[IDX(f_row/sH, f_col/sW, total_strides_width)] = (float)result;
                 return_code = 0;
                 continue;
             }
 
-            // idk man, here are some debug values
-            const int k_col = j % kW;
-            const int k_row = j / kW;
-
-            const int f_col = (i % total_strides_width);
-            const int f_row = (i / total_strides_width);
-
+  
             // Find the position to read from in the feature map
             const long read_pos = i-N_left-(W*M_top) + (W*(j/kW)) + (j%kW);
             float read_value = f[read_pos];
 
-            // if (i == 1){
-            //     if (f_col - N_left < 0 && k_col < N_left) { printf("Skipped pos [%ld],  Left\n", read_pos); continue; }
-            //     if (f_col + N_right >= W && k_col > N_left) { printf("Skipped pos [%ld],  Right\n", read_pos); continue; }
-            //     if (f_row - M_top < 0 && k_row < M_top) { printf("Skipped pos [%ld],  Top\n", read_pos); continue; }
-            //     if (f_row + M_bot >= H && k_row > M_top) { printf("Skipped pos [%ld],  Bot\n", read_pos); continue; }
-            // }
-            
-
             // logical padding
-            if (f_col - N_left < 0 && k_col < N_left) continue;     // left
-            if (f_col + N_right >= W && k_col > N_left) continue;  // right
-            if (f_row - M_top < 0 && k_row < M_top) continue;       // top
-            if (f_row + M_bot >= H && k_row > M_top) continue;      // bottom
+            if (f_col - N_left < 0 && N_left-k_col > f_col) continue;               // left
+            if (f_col + N_right >= W && k_col-N_left >= (W - f_col)) continue;      // right
+            if (f_row - M_top < 0 && M_top-k_row > f_row) continue;                 // top
+            if (f_row + M_bot >= H && k_row-M_bot >= (H - f_row)) continue;         // bottom
 
-            // if (i == 1){
-            //     printf("Actually read pos [%ld], at [%d,%d], as kernel [%d,%d]\n", read_pos, f_row, f_col, k_row, k_col);
+            // if(i == 6){
+            //     printf("Read: [%d,%d]\n", k_row, k_col);
             // }
-            
 
             result += (double)(read_value) * (double)(g[j]);
         }
