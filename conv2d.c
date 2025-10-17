@@ -588,7 +588,7 @@ int main(int argc, char** argv) {
             // If only one process, generate entire feature map directly
             generate_data(total_height, total_width, padding_height, padding_width, &feature_map, featureMapSeed);
         } else {
-            generate_data(totalRowCount, total_width, padding_height, padding_width, &feature_map, featureMapSeed);
+            generate_data(totalRowCount + padding_height * 2, total_width, padding_height, padding_width, &feature_map, featureMapSeed);
         }
         // If wanting to save inputs, write to feature file
         if (feature_file != NULL){
