@@ -46,3 +46,4 @@ conv2d
 *.py
 *.slurm
 test*
+run
