@@ -99,7 +99,7 @@ int extract_dimensions(char* filepath, int* height, int* width) {
 }
 
 
-/* TODO: Check if we can remove "sW" and "sH", we might not need them in the end.
+/*
 * Reads an input file and extracts data into an output. 
 * @param filepath           The filepath where the data is stored.
 * @param width              The number of elements in each line. Width.
@@ -108,8 +108,6 @@ int extract_dimensions(char* filepath, int* height, int* width) {
 * @param padding_height     The number of zeroes to pad the height with.
 * @param start_index        The index at which to start extracting rows of data. Used to divide up work using MPI. 
                                 To extract all data, set this to zero. To make an "end_index", use "height".
-* @param sW                 Stride width.
-* @param sH                 Stride height.
 * @param output             The stream into which the inputs will be stored.
 */
 int extract_data(char* filepath, int width, int height, int padding_width, int padding_height, int start_index, /*int sW, int sH,*/ float* *output) {
@@ -148,8 +146,8 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
                 const float element = (float)atof(token);
 
                 // Calculations for where to put the extracted data into the output array
-                const int output_col_index = i + row_offset;       // TODO: Might need   i/sH + row_offset
-                const int output_row_index = j + padding_width;    // TODO: Might need   j/sW + padding_width
+                const int output_col_index = i + row_offset;
+                const int output_row_index = j + padding_width;
                 const int index = IDX(output_col_index, output_row_index, total_width); 
                 
                 if (index >= total_width * (height + padding_height*2)) {continue;}
@@ -186,16 +184,18 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     const long M_top = (kH - 1) / 2;
     const long M_bot = kH%2==0 ? M_top+1 : M_top;
 
-    const long N_left = (kW - 1) / 2;
-    const long N_right = kW%2==0 ? N_left+1 : N_left;
+    
 
-    printf("M=[%ld,%ld], N=[%ld,%ld]\n", M_top, M_bot, N_left, N_right);
+    const long N_left = (kW - 1) / 2;
+    //const long N_right = kW%2==0 ? N_left+1 : N_left;
 
     const long total_strides_width = TOTAL_STRIDES(W, sW);
     //const long total_strides_height = TOTAL_STRIDES(H, sH);
     const long feature_length = H * W;
     //const long output_length = total_strides_width * total_strides_height;
     const long kernel_length = (long)kH * (long)kW;
+
+    const int precalc = (N_left-(W*M_top));
 
 
     // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error. 
@@ -215,12 +215,11 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
     // }
 
     /* Chunk size = row_width * (kernel_length + 1)
-    Iterations being (length + 1) is because we add an extra iteration to the end to write the output, allowing us to freely skip all prior iterations if need be.
-    TODO: If performance drags dramtically with larger kernels, we need to consider splitting up the work across threads/processes for each individual convolution. This'd be hard */
+    Iterations being (length + 1) is because we add an extra iteration to the end to write the output, allowing us to freely skip all prior iterations if need be.*/
 
-    #pragma omp parallel for collapse(2) schedule(static, W*(kernel_length+1)) firstprivate(result)
-    for (long i = 0; i < feature_length; i++){      // TODO: Need to work out how stride would work...
-        for (long j = 0; j < kernel_length + 1; j++){
+    #pragma omp parallel for collapse(2) schedule(dynamic, W*(kernel_length+1)) firstprivate(result)
+    for (int i = 0; i < feature_length; i++){      // TODO: Need to work out how stride would work...
+        for (int j = 0; j < kernel_length + 1; j++){
 
             // Current 2D write position in the feature_map / output array
             const int f_col = (i % W);
@@ -232,7 +231,6 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
             const int k_col = j % kW;
             const int k_row = j / kW;
 
-            
             // Reset result at the start of every kernel iteration
             if (j == 0) { result = 0.0; }
 
@@ -242,22 +240,14 @@ int conv2d_stride(float* f, int H, int W, float* g, int kH, int kW, int sH, int 
                 continue;
             }
 
-  
-            // Find the position to read from in the feature map
-            const long read_pos = i-N_left-(W*M_top) + (W*(j/kW)) + (j%kW);
-            float read_value = f[read_pos];
-
             // logical padding
-            if (f_col - N_left < 0 && N_left-k_col > f_col) continue;               // left
-            if (f_col + N_right >= W && k_col-N_left >= (W - f_col)) continue;      // right
-            if (f_row - M_top < 0 && M_top-k_row > f_row) continue;                 // top
-            if (f_row + M_bot >= H && k_row-M_bot >= (H - f_row)) continue;         // bottom
+            if (N_left-k_col > f_col) continue;               // left
+            if (k_col-N_left >= (W - f_col)) continue;      // right
+            if (M_top-k_row > f_row) continue;                 // top
+            if (k_row-M_bot >= (H - f_row)) continue;         // bottom
 
-            // if(i == 6){
-            //     printf("Read: [%d,%d]\n", k_row, k_col);
-            // }
-
-            result += (double)(read_value) * (double)(g[j]);
+            // Find the position to read from in the feature map
+            result += (double)(f[i-precalc + (W*(j/kW)) + (j%kW)]) * (double)(g[j]);
         }
     }
 
@@ -748,7 +738,7 @@ int main(int argc, char** argv) {
     
     // This is how many times a convolution takes place over each row/col. Also used to determine output array size.
     const int total_strides_width = TOTAL_STRIDES(W, sW);
-    const int total_strides_height = TOTAL_STRIDES(rowCount, sH); // TODO: Fix this to work properly. This assumes stride = 1
+    const int total_strides_height = TOTAL_STRIDES(rowCount, sH);
 
     // Used to determine if a process should write to file. This changes to 0 if an error occurs in the convolutions.
     int should_write_to_file = 1;
