@@ -52,6 +52,13 @@ typedef struct {
     char* padding;
 } float_array;
 
+// Only used by data generation to tell the function `generate_data()` where to start/end with data inputs. TODO: Remove if unecessary
+typedef struct {
+    int start_row;
+    int start_col;
+    int end_row;
+    int end_col;
+} f_start_end;
 
 /*
 * Extracts the dimensions from a file.
@@ -264,15 +271,15 @@ int write_data_to_file(char* filepath, float* outputs, float_array padded_output
  * @param   w_padding   Width Padding. Data will only be written in non-padded columns.
  * @param   output      The location where the generated data will be stored.
 */
-int generate_data(int height, int width, int h_padding, int w_padding, float* *output, int seed){
+int generate_data(int width, f_start_end start_end/* int h_padding, int w_padding*/, float* *output, int seed){
 
     // Make a new random seed. This stops f from being the same as g when the code runs too fast.
     if (seed == -1) {
         srand(rand());
     }
     
-    for (int i=h_padding; i<height-h_padding; i++){
-        for (int j=w_padding; j<width-w_padding; j++){
+    for (int i = start_end.start_row; i < start_end.end_row; i++){
+        for (int j = start_end.start_col; j < start_end.end_col; j++){
             (*output)[IDX(i,j,width)] = (float)rand() / (float)RAND_MAX;
         }
     }
@@ -322,7 +329,6 @@ int main(int argc, char** argv) {
     char* kernel_file = NULL;       // -g <path>
     char* output_file = NULL;       // -o <path>
     int threads = 1;                // -t <int>
-    //int padding_option = 0;         // -p <int>
 
     // DEBUG FLAGS
     int benchmark_mode = 0;         // -b
@@ -398,11 +404,6 @@ int main(int argc, char** argv) {
             omp_set_num_threads(threads);
             continue;
         }
-        // if (strcmp(argv[i], "-p") == 0){
-        //     if (i + 1 >= argc) { printf("Incorrect usage of -t flag. Please provide a number of threads.\n"); return 1; }
-        //     padding_option = atoi(argv[++i]) > 0 ? atoi(argv[i]) : 0;
-        //     continue;
-        // }
     }
 
 
@@ -459,9 +460,8 @@ int main(int argc, char** argv) {
 
     // Seed for random generation later. This ensures the seed is identical across all processes.
     time_t featureMapSeed;
-    if (rank == 0) { featureMapSeed = 12345/*time(0)*/;}
+    if (rank == 0) { featureMapSeed = time(0);}
     MPI_Bcast(&featureMapSeed, 1, MPI_LONG, 0, MPI_COMM_WORLD);
-
 
 
 
@@ -481,11 +481,17 @@ int main(int argc, char** argv) {
             printf("Error allocating memory for kernel.\n");
             return 1;
         }
+        f_start_end kernel_generation_data = {0};
+        kernel_generation_data.start_col = 0; 
+        kernel_generation_data.start_row = 0;
+        kernel_generation_data.end_col = kW;
+        kernel_generation_data.end_row = kH;
 
-        generate_data(kH, kW, 0, 0, &kernel, -1);
+
+        generate_data(kW, kernel_generation_data, &kernel, -1);
 
         // If wanting to save inputs, write to kernel file
-        if (kernel_file != NULL){
+        if (kernel_file != NULL && rank == 0){
             int status = write_data_to_file(kernel_file, kernel, (float_array){0}, kH, kW, 0, 0, 1, kW, kH);
             if (status != 0){
                 printf("Error writing kernel to file.\n");
@@ -528,6 +534,7 @@ int main(int argc, char** argv) {
     int totalRowCount;
 
 
+
     // ~~~~~~~~~~~~~~ 5. Feature Map Generation / Extraction ~~~~~~~~~~~~~~ //
 
     float* feature_map = NULL;
@@ -545,28 +552,19 @@ int main(int argc, char** argv) {
         start_index = rank * (H / world_size) + min(rank, (H % world_size));
 
         const int total_width = W + padding_width*2;
-        const int total_height = H + padding_height*2;
+        //const int total_height = H + padding_height*2;
 
         // Determine the number of rows each process should use in convolutions.
         rowCount = (H / world_size) + (rank < (H % world_size) ? 1 : 0);
+        
+        // Total number of rows that each process should create memory for. This includes the rows it will do convolutions on (rowCount) AND padding.
+        totalRowCount = rowCount + padding_height*2;
 
-        int overlapBefore = 0;
-        int overlapAfter = 0;
+        const int startRow = (rowCount * rank) + padding_height*(rank==0?1:0);
         
-        if (rank > 0) overlapBefore = padding_height;
-        if (rank < world_size - 1) overlapAfter = padding_height;
-        
-        totalRowCount = rowCount + overlapBefore + overlapAfter;
-
-        int startRow = 0;
-        for (int i = 0; i < rank; i++) {
-            startRow += (H / world_size) + (i < (H % world_size) ? 1 : 0);
-        }
-        
-        int startWithOverlap = startRow - overlapBefore;
 
         // Allocating memory
-        if (posix_memalign((void**)&feature_map, 64, total_width * total_height * sizeof(float)) != 0){
+        if (posix_memalign((void**)&feature_map, 64, total_width * totalRowCount * sizeof(float)) != 0){
             printf("Error allocating memory for feature map.\n");
             MPI_Finalize();
             return 1;
@@ -579,17 +577,19 @@ int main(int argc, char** argv) {
 
         srand(featureMapSeed);
         
-        int values_to_skip = startWithOverlap * W;
+        int values_to_skip = startRow * W;
         for (int i = 0; i < values_to_skip; i++) {
             rand();
         }
+
+        f_start_end generation_data = {0};
+        generation_data.start_row   = (rank==0) ? padding_height : 0;
+        generation_data.end_row     = padding_height + rowCount + ((rank == world_size - 1) ? 0 : padding_height);
+        generation_data.start_col   = padding_width;
+        generation_data.end_col     = total_width - padding_width;
         
-        if (world_size == 1) {
-            // If only one process, generate entire feature map directly
-            generate_data(total_height, total_width, padding_height, padding_width, &feature_map, featureMapSeed);
-        } else {
-            generate_data(totalRowCount + padding_height * 2, total_width, padding_height, padding_width, &feature_map, featureMapSeed);
-        }
+        generate_data(total_width, generation_data, &feature_map, featureMapSeed);
+
         // If wanting to save inputs, write to feature file
         if (feature_file != NULL){
 
@@ -633,7 +633,7 @@ int main(int argc, char** argv) {
                 for (int j = 0; j < W; j++) {
                     // ensure we don't overrun the per-value slot; FLOAT_STRING_LENGTH is reserved per value
                     // use snprintf to be safer with bounds
-                    int written = snprintf(p, FLOAT_STRING_LENGTH + 1, "%0.3f ", ROUNDF(feature_map[IDX(overlapBefore + i + padding_height, j+padding_width, total_width)], 3));
+                    int written = snprintf(p, FLOAT_STRING_LENGTH + 1, "%0.3f ", ROUNDF(feature_map[IDX(i + padding_height, j+padding_width, total_width)], 3));
                     if (written < 0) written = 0;
                     p += FLOAT_STRING_LENGTH; // advance fixed slot
                 }
