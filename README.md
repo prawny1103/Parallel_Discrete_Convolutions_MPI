@@ -30,7 +30,8 @@ ___
 * -b: enables the benchmarking mode, which measures and outputs the performance of the program. This is a debugging flag and as such, is not required.
 ___
 ### Sample usage:
-To run this program with MPI, we'll need to use the `mpirun` command, with the `-np` flag specifying the number of processes you intend to split the work across. Since MPI automatically binds itself to a single core, we need to set the `--bind-to` flag to `none`, to ensure the parallel portions of our code still operate as expected. 
+To run this program with MPI, we'll need to use the `mpirun` command, with the `-np` flag specifying the number of processes you intend to split the work across. Since MPI automatically binds itself to a single core, we need to set the `--bind-to` flag to `none`, to ensure the parallel portions of our code still operate as expected. Otherwise, MPI+OMP execution may
+not yield the expected performance improvements, as threads may be competing for the same core.
 + With files for the kernel and feature map, using 2 processes
     * mpirun -np 2 --bind-to none ./conv2d -f f0.txt -g g0.txt …
 + Generating the kernel and feature map, using 2 processes
