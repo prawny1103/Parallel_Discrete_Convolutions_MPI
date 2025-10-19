@@ -41,7 +41,7 @@
 #define ROUNDF(number, precision) ( (float)(ROUND(number * POW(10, precision))) / (float)(POW(10, precision)) )
 
 // Macro for converting 2D indices to a 1D index
-#define IDX(row, col, step) ((row) * (step) + (col))
+#define IDX(row, col, step) ((long)((row)) * (long)((step)) + (long)((col)))
 
 // During development, my 7 key broke and now gets no response. This makes using && very hard without copy-paste. So I made this.
 #define and &&
@@ -68,10 +68,10 @@ typedef struct {
  * @param   end_col
  */
 typedef struct {
-    int start_row;
-    int start_col;
-    int end_row;
-    int end_col;
+    long start_row;
+    long start_col;
+    long end_row;
+    long end_col;
 } f_StartEnd;
 
 /**
@@ -101,12 +101,12 @@ typedef struct {
  * @param  threads         Number of threads to use.        `-t <int>`
  */
 typedef struct {
-    int H;
-    int W;
-    int kH;
-    int kW;
-    int sW;
-    int sH;
+    long H;
+    long W;
+    long kH;
+    long kW;
+    long sW;
+    long sH;
     char* feature_file;
     char* kernel_file;
     char* output_file;
@@ -123,7 +123,7 @@ typedef struct {
 * @param height       Pointer to the location where the height will be stored.
 * @param width        Pointer to the location where the width will be stored.
 */
-int extract_dimensions(char* filepath, int* height, int* width) {
+int extract_dimensions(char* filepath, long* height, long* width) {
 
     if (filepath == NULL) { return 1; }
     char firstline[16];
@@ -173,34 +173,34 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
     const size_t buffer_size = (FLOAT_STRING_LENGTH * width) + 2; // +2 for new-line and null-byte
     char* buffer = (char*)malloc(buffer_size);
 
-    const int rows_to_read = height + padding_height*2;
-    const int total_width = width + padding_width*2;
-    const int row_offset = (process_data.rank == 0) ? padding_height : 0;
+    const long rows_to_read = height + padding_height*2;
+    const long total_width = width + padding_width*2;
+    const long row_offset = (process_data.rank == 0) ? padding_height : 0;
     
     // Safely get the header here so we can ignore later
     fgets(buffer, buffer_size, file_ptr);
 
     // Skip all lines before the start
-    for (int i = 0; i < start_index-1; i++){
+    for (long i = 0; i < start_index-1; i++){
         fgets(buffer, buffer_size, file_ptr);
     }
 
     // Iterates over every row
-    for (int i = 0; i < rows_to_read; i++){
+    for (long i = 0; i < rows_to_read; i++){
         if (fgets(buffer, buffer_size, file_ptr) == NULL) { break; } // Exit if invalid
         char* token = strtok(buffer, " ");
 
         // Iterates over every column in the row
-        for (int j = 0; j < width; j++) {
+        for (long j = 0; j < width; j++) {
             if (token != NULL){
 
                 // Extracted float data from the token 
                 const float element = (float)atof(token);
 
                 // Calculations for where to put the extracted data into the output array
-                const int output_col_index = i + row_offset;
-                const int output_row_index = j + padding_width;
-                const int index = IDX(output_col_index, output_row_index, total_width); 
+                const long output_col_index = i + row_offset;
+                const long output_row_index = j + padding_width;
+                const long index = IDX(output_col_index, output_row_index, total_width); 
                 
                 if (index >= total_width * (height + padding_height*2)) {continue;}
                 (*output)[index] = element; // Add to output.
@@ -229,15 +229,15 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 */
 int conv2d_stride(float* f, int H, int W, float* g, f_InputData inputs, int w_padding, int h_padding, int start_index, f_FloatArray padded_output){
 
-    const int total_height = H + h_padding*2;
-    const int total_width = W + w_padding*2;
-    const int n_end = total_height - h_padding;
-    const int k_end = total_width - w_padding;
-    const int total_strides_width = TOTAL_STRIDES(W, inputs.sW);
+    const long total_height = H + h_padding*2;
+    const long total_width = W + w_padding*2;
+    const long n_end = total_height - h_padding;
+    const long k_end = total_width - w_padding;
+    const long total_strides_width = TOTAL_STRIDES(W, inputs.sW);
 
     // dimensions for convolution window
-    const int M = (inputs.kH - 1) / 2;
-    const int N = (inputs.kW - 1) / 2;
+    const long M = (inputs.kH - 1) / 2;
+    const long N = (inputs.kW - 1) / 2;
 
     // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error. 
     // The purpose of this variable is stop processes from outputting no valid elements because there aren't enough rows for the number of processes.
@@ -248,16 +248,16 @@ int conv2d_stride(float* f, int H, int W, float* g, f_InputData inputs, int w_pa
     if (inputs.threads == 1) {
 
         // ~~~~~~~~~~~~ Serial ~~~~~~~~~~~~ //
-        for (int n = h_padding; n < n_end; n++){
-            for (int k = w_padding; k < k_end; k=k+inputs.sW){
+        for (long n = h_padding; n < n_end; n++){
+            for (long k = w_padding; k < k_end; k=k+inputs.sW){
                 if (( start_index + n-h_padding) % inputs.sH != 0){ continue; }
                 float result = 0.0;
-                for (int i = 0; i < inputs.kH; i++){
-                    for (int j = 0; j < inputs.kW; j++){
-                        result += f[(n+i-M) * (total_width) + (k+j-N)] * g[(i * inputs.kW + j)];
+                for (long i = 0; i < inputs.kH; i++){
+                    for (long j = 0; j < inputs.kW; j++){
+                        result += f[(long)((n+i-M) * (total_width) + (k+j-N))] * g[(long)((i * inputs.kW + j))];
                     }
                 }
-                padded_output.arr[((n - h_padding)/inputs.sH) * total_strides_width + ((k - w_padding)/inputs.sW)] = result;
+                padded_output.arr[(long)(((n - h_padding)/inputs.sH) * total_strides_width + ((k - w_padding)/inputs.sW))] = result;
                 any_written = true;
             }
         }
@@ -266,17 +266,17 @@ int conv2d_stride(float* f, int H, int W, float* g, f_InputData inputs, int w_pa
 
         // ~~~~~~~~~~~~ Parallel ~~~~~~~~~~~~ //
         #pragma omp parallel for collapse(2) schedule(static, W) 
-        for (int n = h_padding; n < n_end; n++){
-            for (int k = w_padding; k < k_end; k=k+inputs.sW){
+        for (long n = h_padding; n < n_end; n++){
+            for (long k = w_padding; k < k_end; k=k+inputs.sW){
                 if (( start_index + n-h_padding) % inputs.sH != 0){ continue; }
                 float result = 0.0;
                 #pragma omp simd collapse(2) reduction(+:result)
-                for (int i = 0; i < inputs.kH; i++){
-                    for (int j = 0; j < inputs.kW; j++){
-                        result += f[(n+i-M) * (total_width) + (k+j-N)] * g[(i * inputs.kW + j)];
+                for (long i = 0; i < inputs.kH; i++){
+                    for (long j = 0; j < inputs.kW; j++){
+                        result += f[(long)((n+i-M) * (total_width) + (k+j-N))] * g[(long)((i * inputs.kW + j))];
                     }
                 }
-                padded_output.arr[((n - h_padding)/inputs.sH) * total_strides_width + ((k - w_padding)/inputs.sW)] = result;
+                padded_output.arr[(long)(((n - h_padding)/inputs.sH) * total_strides_width + ((k - w_padding)/inputs.sW))] = result;
                 any_written = true;
             }
         }
@@ -326,11 +326,11 @@ int write_data_to_file(char* filepath, float* outputs, int lines_to_write, int h
 
     // fill header for rank 0
     if (process_data.rank == 0) {
-        moving_ptr += sprintf(moving_ptr, "%d %d\n", inputs.H, inputs.W);
+        moving_ptr += sprintf(moving_ptr, "%ld %ld\n", inputs.H, inputs.W);
     }
 
-    for (int i = 0; i < lines_to_write; i++){
-        for (int j = 0; j < width; j++){
+    for (long i = 0; i < lines_to_write; i++){
+        for (long j = 0; j < width; j++){
             moving_ptr += sprintf(moving_ptr, "%.3f", outputs[IDX(i, j, width)]);   // Add float to buffer
             moving_ptr += sprintf(moving_ptr, (j<width-1) ? (" ") : ("\n"));        // Add a new-line if at end of row, else add a space.
         }
@@ -379,12 +379,20 @@ int generate_data(int width, f_StartEnd start_end, float* *output, int seed){
 
     // Make a new random seed. This stops f from being the same as g when the code runs too fast.
     if (seed == -1) {
-        srand(rand());
+        seed = rand();
     }
-    
-    for (int i = start_end.start_row; i < start_end.end_row; i++){
-        for (int j = start_end.start_col; j < start_end.end_col; j++){
-            (*output)[IDX(i,j,width)] = (float)rand() / (float)RAND_MAX;
+
+    #pragma omp parallel
+    {
+        #pragma omp for schedule(static)
+        for (long i = start_end.start_row; i < start_end.end_row; i++) {
+            unsigned int row_seed = seed + (unsigned int)i;
+            
+            size_t row_offset = (size_t)i * (size_t)width;
+            
+            for (long j = start_end.start_col; j < start_end.end_col; j++) {
+                (*output)[row_offset + j] = (float)rand_r(&row_seed) / (float)RAND_MAX;
+            }
         }
     }
     return 0;
@@ -562,6 +570,9 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    // todo remove
+    double test_start_time = omp_get_wtime();
+    
 
     MPI_Barrier(process_data.comm); 
 
@@ -570,7 +581,7 @@ int main(int argc, char** argv) {
 
     // Seed for random generation later. This ensures the seed is identical across all processes.
     time_t featureMapSeed;
-    if (process_data.rank == 0) { featureMapSeed = time(0);}
+    if (process_data.rank == 0) { featureMapSeed = 12345/*time(0)*/;}
     MPI_Bcast(&featureMapSeed, 1, MPI_LONG, 0, process_data.comm);
 
 
@@ -587,7 +598,7 @@ int main(int argc, char** argv) {
         inputs.kW = MAX(inputs.kW, 1);
 
         // Allocating memory
-        if (posix_memalign((void**)&kernel, 64, inputs.kW * inputs.kH * sizeof(float)) != 0){
+        if (posix_memalign((void**)&kernel, 64, (long)(inputs.kW) * (long)(inputs.kH) * sizeof(float)) != 0){
             printf("Error allocating memory for kernel.\n");
             return 1;
         }
@@ -619,7 +630,7 @@ int main(int argc, char** argv) {
         }
         
         // Allocating memory
-        if (posix_memalign((void**)&kernel, 64, inputs.kW * inputs.kH * sizeof(float)) != 0){
+        if (posix_memalign((void**)&kernel, 64, (long)(inputs.kW) * (long)(inputs.kH) * sizeof(float)) != 0){
             printf("Error allocating memory for kernel.\n");
             MPI_Abort(process_data.comm, EXIT_FAILURE);
             return 1;
@@ -672,25 +683,37 @@ int main(int argc, char** argv) {
         // Total number of rows that each process should create memory for. This includes the rows it will do convolutions on (rowCount) AND padding.
         totalRowCount = rowCount + padding_height*2;
 
-        const int startRow = (rowCount * process_data.rank) + padding_height*(process_data.rank==0?1:0);
+        const long startRow = (rowCount * process_data.rank) + padding_height*(process_data.rank==0?1:0);
         
 
-        // Allocating memory
-        if (posix_memalign((void**)&feature_map, 64, total_width * totalRowCount * sizeof(float)) != 0){
-            printf("Error allocating memory for feature map.\n");
+        // // Allocating memory
+        // if (posix_memalign((void**)&feature_map, 64, (long)(total_width) * (long)(totalRowCount) * sizeof(float)) != 0){
+        //     printf("Error allocating memory for feature map.\n");
+        //     MPI_Finalize();
+        //     return 1;
+        // }
+
+        f_FloatArray feature_map_padded = {0};
+        const int cache_padding_size = 64 - ((inputs.W * sizeof(float)) % 64);
+
+        if (posix_memalign((void**)&feature_map_padded.arr, 64, (long)(total_width) * (long)(totalRowCount) * sizeof(float)) != 0){
+            printf("Error allocating memory for padded output.\n");
             MPI_Finalize();
             return 1;
         }
+        feature_map_padded.padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
 
         // Add zeroes as padding
-        for (int i = 0; i < total_width * totalRowCount; i++){
-            feature_map[i] = 0.0f;
+        for (long i = 0; i < total_width * totalRowCount; i++){
+            feature_map_padded.arr[i] = 0.0f;
         }
+
+        feature_map = feature_map_padded.arr;
 
         srand(featureMapSeed);
         
-        int values_to_skip = startRow * inputs.W;
-        for (int i = 0; i < values_to_skip; i++) {
+        long values_to_skip = startRow * inputs.W;
+        for (long i = 0; i < values_to_skip; i++) {
             rand();
         }
 
@@ -700,7 +723,9 @@ int main(int argc, char** argv) {
         generation_data.start_col   = padding_width;
         generation_data.end_col     = total_width - padding_width;
         
-        generate_data(total_width, generation_data, &feature_map, featureMapSeed);
+        
+
+        generate_data(total_width, generation_data, &feature_map_padded.arr, featureMapSeed);
 
         // If wanting to save inputs, write to feature file
         if (inputs.feature_file != NULL){
@@ -732,14 +757,14 @@ int main(int argc, char** argv) {
 
 
         // Allocate memory for the feature map of the feature map.
-        if (posix_memalign((void**)&feature_map, 64, total_width * totalRowCount * sizeof(float)) != 0){
+        if (posix_memalign((void**)&feature_map, 64, (long)(total_width) * (long)(totalRowCount) * sizeof(float)) != 0){
             printf("Error allocating memory for feature map.\n");
             MPI_Finalize();
             return 1;
         }
 
         // Add zeroes as padding
-        for (int i = 0; i < total_width * totalRowCount; i++){
+        for (long i = 0; i < total_width * totalRowCount; i++){
             feature_map[i] = 0.0f;
         }
 
@@ -750,7 +775,6 @@ int main(int argc, char** argv) {
             return 1;
         } 
     }
-        
 
     
     // ~~~~~~~~~~~~~~ 6. Convolutions ~~~~~~~~~~~~~~ //
@@ -776,7 +800,7 @@ int main(int argc, char** argv) {
     // Equal to the number of bytes left over in the cache line containing the final element in float array.
     const int cache_padding_size = 64 - ((inputs.W * sizeof(float)) % 64);
 
-    if (posix_memalign((void**)&padded_outputs.arr, 64, total_strides_width * total_strides_height * sizeof(float)) != 0){
+    if (posix_memalign((void**)&padded_outputs.arr, 64, (long)(total_strides_width) * (long)(total_strides_height) * sizeof(float)) != 0){
         printf("Error allocating memory for padded output.\n");
         MPI_Finalize();
         return 1;
@@ -818,7 +842,7 @@ int main(int argc, char** argv) {
 
     } // End of loop for multi_benchmark_mode
 
-    if (multi_benchmark_mode == 1 && process_data.rank == 0) {printf("Threads=%d, sH=%d, sW=%d, Average Time:  %0.15f\n", inputs.threads, inputs.sH, inputs.sW, average_time/max_iterations); }
+    if (multi_benchmark_mode == 1 && process_data.rank == 0) {printf("Threads=%d, sH=%ld, sW=%ld, Average Time:  %0.15f\n", inputs.threads, inputs.sH, inputs.sW, average_time/max_iterations); }
 
     MPI_Finalize();
 
