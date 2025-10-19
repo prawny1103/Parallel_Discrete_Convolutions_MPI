@@ -117,6 +117,18 @@ typedef struct {
 
 /* ~~~~~~~~~~~~~~~~~~~~ Functions ~~~~~~~~~~~~~~~~~~~~ */
 
+
+/**
+ * This is a utility function only meant to clear a file.
+ * @param   filepath    The path to the file being emptied/cleared.
+ */
+void clear_file(char* filepath){
+    FILE *fp = fopen(filepath, "w");
+    fclose(fp);
+    return;
+}
+
+
 /*
 * Extracts the dimensions from a file.
 * @param filepath     The filepath where the data is stored.
@@ -228,6 +240,9 @@ int extract_data(char* filepath, int width, int height, int padding_width, int p
 * @param    padded_output   Location where outputs are stored.
 */
 int conv2d_stride(float* f, int H, int W, float* g, f_InputData inputs, int w_padding, int h_padding, int start_index, f_FloatArray padded_output){
+    
+    // Used to stop a process from writing if it did no work.
+    bool any_written = false;
 
     const long total_height = H + h_padding*2;
     const long total_width = W + w_padding*2;
@@ -239,10 +254,10 @@ int conv2d_stride(float* f, int H, int W, float* g, f_InputData inputs, int w_pa
     const long M = (inputs.kH - 1) / 2;
     const long N = (inputs.kW - 1) / 2;
 
-    // This is 1 (an error) until any change is made to the output array, then it is set to 0. If no change is made, then it stays as 1 and outputs an error. 
-    // The purpose of this variable is stop processes from outputting no valid elements because there aren't enough rows for the number of processes.
-    // Additionally, it is fully intended that this variable is shared amongst threads because if even one thread contains valid data, we should output it.
-    bool any_written = false;
+    // Early exits for issues
+    if (H < 1 || W < 1 || inputs.H < 1 || inputs.W < 1)     { return any_written; }
+    if (f == NULL || g == NULL || padded_output.arr == NULL){ return any_written; }
+    if (w_padding < 0 || h_padding < 0 || start_index < 0)  { return any_written; }    
     
     // Swap between Serialized and Parallel
     if (inputs.threads == 1) {
@@ -254,7 +269,7 @@ int conv2d_stride(float* f, int H, int W, float* g, f_InputData inputs, int w_pa
                 float result = 0.0;
                 for (long i = 0; i < inputs.kH; i++){
                     for (long j = 0; j < inputs.kW; j++){
-                        result += f[(long)((n+i-M) * (total_width) + (k+j-N))] * g[(long)((i * inputs.kW + j))];
+                        result += f[(n+i-M) * (total_width) + (k+j-N)] * g[i * inputs.kW + j];
                     }
                 }
                 padded_output.arr[(long)(((n - h_padding)/inputs.sH) * total_strides_width + ((k - w_padding)/inputs.sW))] = result;
@@ -273,7 +288,7 @@ int conv2d_stride(float* f, int H, int W, float* g, f_InputData inputs, int w_pa
                 #pragma omp simd collapse(2) reduction(+:result)
                 for (long i = 0; i < inputs.kH; i++){
                     for (long j = 0; j < inputs.kW; j++){
-                        result += f[(long)((n+i-M) * (total_width) + (k+j-N))] * g[(long)((i * inputs.kW + j))];
+                        result += f[(n+i-M) * (total_width) + (k+j-N)] * g[i * inputs.kW + j];
                     }
                 }
                 padded_output.arr[(long)(((n - h_padding)/inputs.sH) * total_strides_width + ((k - w_padding)/inputs.sW))] = result;
@@ -309,59 +324,71 @@ int find_char_count(int number){
  * @param process_data          Information about the currently running process.
  * @param root_only             Whether or not this function should be run by the root process only.
 */
-int write_data_to_file(char* filepath, float* outputs, int lines_to_write, int height, int width, int h_padding, int w_padding, f_InputData inputs, f_MPI process_data, bool root_only){
-    
-    // Early exit if we only want the root to run this function
-    if (root_only and process_data.rank != 0){ return 0; }
-
-    // number of chars in the dimensions header
-    const int dimensions_offset = find_char_count(height) + 1 + find_char_count(width) + 1;
-
-    // MAke a much larger estimate for the size of the line than necessary. This is to ensure they fit.
-    const int largest_float_possible = find_char_count(inputs.kH*inputs.kW);
-    size_t buffer_bytes = lines_to_write * width * (largest_float_possible + 5) + (process_data.rank == 0 ? (size_t)dimensions_offset : 0); // +5 because floats will be ".XXX "
-
-    char* buffer = malloc(buffer_bytes);
-    char* moving_ptr = buffer;
-
-    // fill header for rank 0
-    if (process_data.rank == 0) {
-        moving_ptr += sprintf(moving_ptr, "%ld %ld\n", inputs.H, inputs.W);
-    }
-
-    for (long i = 0; i < lines_to_write; i++){
-        for (long j = 0; j < width; j++){
-            moving_ptr += sprintf(moving_ptr, "%.3f", outputs[IDX(i, j, width)]);   // Add float to buffer
-            moving_ptr += sprintf(moving_ptr, (j<width-1) ? (" ") : ("\n"));        // Add a new-line if at end of row, else add a space.
-        }
-    }
-
-    // Get the total number of bytes we've actually written
-    size_t bytes_written = moving_ptr - buffer;
-    if (bytes_written > buffer_bytes) {
-        printf("Buffer Overflow!\n");
-        free(buffer);
-        return 1;
-    }
-
-    MPI_Offset write_offset;
-    MPI_Exscan(&bytes_written, &write_offset, 1, MPI_UNSIGNED_LONG, MPI_SUM, process_data.comm);
-
-    if (process_data.rank == 0){ write_offset = 0; }
+int write_data_to_file(char* filepath, float* outputs, int lines_to_write, int height, int width, int h_padding, int w_padding, bool should_write, f_InputData inputs, f_MPI process_data, bool root_only){
 
     // Open the file
     MPI_File handle;
     int access_mode = MPI_MODE_CREATE | MPI_MODE_WRONLY;
     if (MPI_File_open(process_data.comm, filepath, access_mode, MPI_INFO_NULL, &handle) != MPI_SUCCESS) {
         printf("Process %d, Failure in opening file.\n", process_data.rank);
-        free(buffer);
-        return 1;
     }
 
-    MPI_File_write_at_all(handle, write_offset, buffer, bytes_written, MPI_CHAR, MPI_STATUS_IGNORE);
+    if (process_data.rank == 0){
+        clear_file(filepath);
+    }
 
-    free(buffer);
+    const bool this_process_writes = should_write && (!root_only || process_data.rank == 0);
+
+    MPI_Barrier(process_data.comm);
+
+    // number of chars in the dimensions header
+    const int dimensions_offset = find_char_count(lines_to_write) + 1 + find_char_count(width) + 1;
+
+    // MAke a much larger estimate for the size of the line than necessary. This is to ensure they fit.
+    const int largest_float_possible = find_char_count(inputs.kH*inputs.kW);
+    size_t buffer_bytes = lines_to_write * width * (largest_float_possible + 5) + (process_data.rank == 0 ? (size_t)dimensions_offset : 0) + 1; // +5 because ".XXX " and +1 because null-byte
+
+    char* buffer;
+    size_t bytes_written = 0;
+
+    if (this_process_writes == 1){
+        buffer = malloc(buffer_bytes);
+        char* moving_ptr = buffer;
+
+        // fill header for rank 0
+        if (process_data.rank == 0) {
+            moving_ptr += sprintf(moving_ptr, "%ld %ld\n", TOTAL_STRIDES(inputs.H, inputs.sH), TOTAL_STRIDES(inputs.W, inputs.sW));
+        }
+
+        for (long i = 0; i < lines_to_write; i++){
+            for (long j = 0; j < width; j++){
+                moving_ptr += sprintf(moving_ptr, "%.3f", outputs[IDX(i, j, width)]);   // Add float to buffer
+                moving_ptr += sprintf(moving_ptr, (j<width-1) ? (" ") : ("\n"));        // Add a new-line if at end of row, else add a space.
+            }
+        }
+        // Get the total number of bytes we've actually written
+        bytes_written = moving_ptr - buffer;
+
+        if (bytes_written > buffer_bytes) {
+            printf("Buffer Overflow! Tried to write %ld bytes to %ld bytes in memory...\n", bytes_written, buffer_bytes);
+            free(buffer);
+        }
+    }
+
+    
+
+    
+
+    MPI_Offset write_offset;
+    MPI_Exscan(&bytes_written, &write_offset, 1, MPI_UNSIGNED_LONG, MPI_SUM, process_data.comm);
+
+    if (process_data.rank == 0){ write_offset = 0; }
+
+    MPI_File_write_at_all(handle, write_offset, buffer, bytes_written, MPI_CHAR, MPI_STATUS_IGNORE);
+    if (this_process_writes == 1) free(buffer);
     MPI_File_close(&handle);
+
+
 
     return 0;
 }
@@ -379,7 +406,9 @@ int generate_data(int width, f_StartEnd start_end, float* *output, int seed){
 
     // Make a new random seed. This stops f from being the same as g when the code runs too fast.
     if (seed == -1) {
+        srand(time(NULL));
         seed = rand();
+        
     }
 
     #pragma omp parallel
@@ -396,16 +425,6 @@ int generate_data(int width, f_StartEnd start_end, float* *output, int seed){
         }
     }
     return 0;
-}
-
-/**
- * This is a utility function only meant to clear a file.
- * @param   filepath    The path to the file being emptied/cleared.
- */
-void clear_file(char* filepath){
-    FILE *fp = fopen(filepath, "w");
-    fclose(fp);
-    return;
 }
 
 
@@ -429,9 +448,6 @@ int main(int argc, char** argv) {
     
 
     // ~~~~~~~~~~~~~~~ 1. Argument Extraction ~~~~~~~~~~~~~~ //
-    
-    //TODO remove
-    omp_set_nested(1); // Allow nested parallelism for SIMD 
 
     // Default input values
     f_InputData inputs = {
@@ -493,19 +509,16 @@ int main(int argc, char** argv) {
         if (strcmp(argv[i], "-f") == 0) {
             if (i + 1 >= argc) { printf("Incorrect usage of -f flag. Please provide a filepath.\n"); return 1; }
             inputs.feature_file = argv[++i];
-            clear_file(inputs.feature_file);
             continue;
         }
         if (strcmp(argv[i], "-g") == 0) {
             if (i + 1 >= argc) { printf("Incorrect usage of -g flag. Please provide a filepath.\n"); return 1; }
             inputs.kernel_file = argv[++i];
-            clear_file(inputs.kernel_file);
             continue;
         }
         if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 >= argc) { printf("Incorrect usage of -o flag. Please provide a filepath.\n"); return 1; }
             inputs.output_file = argv[++i];
-            clear_file(inputs.output_file);
             continue;
         }
         if (strcmp(argv[i], "-b") == 0) {
@@ -550,28 +563,26 @@ int main(int argc, char** argv) {
         }
         if (inputs.H < 0 || inputs.W < 0 || inputs.kH < 0 || inputs.kW < 0 || inputs.threads < 1 || max_iterations < 1){
             printf("Please provide only positive integers for dimensions and threads.\n");
-            MPI_Finalize();
+            MPI_Abort(process_data.comm, EXIT_FAILURE);
             return 1;
         }
         if (inputs.H == 0 && inputs.W == 0 && inputs.feature_file == NULL){
             printf("Please provide either a feature map file or dimensions to generate one.\n");
-            MPI_Finalize();
+            MPI_Abort(process_data.comm, EXIT_FAILURE);
             return 1;
         }
         if (inputs.kH == 0 && inputs.kW == 0 && inputs.kernel_file == NULL){
             printf("Please provide either a kernel file or dimensions to generate one.\n");
-            MPI_Finalize();
+            MPI_Abort(process_data.comm, EXIT_FAILURE);
             return 1;
         }
 
         if (multi_benchmark_mode && (inputs.feature_file || inputs.kernel_file)) { 
             printf("Do not input a file while running multi-benchmark mode.\n");
-            MPI_Finalize();
+            MPI_Abort(process_data.comm, EXIT_FAILURE);
             return 1;
         }
     }
-    // todo remove
-    double test_start_time = omp_get_wtime();
     
 
     MPI_Barrier(process_data.comm); 
@@ -581,7 +592,7 @@ int main(int argc, char** argv) {
 
     // Seed for random generation later. This ensures the seed is identical across all processes.
     time_t featureMapSeed;
-    if (process_data.rank == 0) { featureMapSeed = 12345/*time(0)*/;}
+    if (process_data.rank == 0) { featureMapSeed = time(0);}
     MPI_Bcast(&featureMapSeed, 1, MPI_LONG, 0, process_data.comm);
 
 
@@ -612,8 +623,8 @@ int main(int argc, char** argv) {
         generate_data(inputs.kW, kernel_generation_data, &kernel, -1);
 
         // If wanting to save inputs, write to kernel file
-        if (inputs.kernel_file != NULL && process_data.rank == 0){
-            if (write_data_to_file(inputs.kernel_file, kernel, inputs.kH, inputs.kH, inputs.kW, 0, 0, inputs, process_data, true) != 0) {
+        if (inputs.kernel_file != NULL){
+            if (write_data_to_file(inputs.kernel_file, kernel, inputs.kH, inputs.kH, inputs.kW, 0, 0, true, inputs, process_data, true) != 0) {
                 MPI_Abort(process_data.comm, EXIT_FAILURE);
                 return 1;
             }
@@ -643,6 +654,7 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+
 
     // This is the "same padding" that'll be added to the feature map.
     const int padding_width = inputs.kW / 2;
@@ -684,21 +696,13 @@ int main(int argc, char** argv) {
         totalRowCount = rowCount + padding_height*2;
 
         const long startRow = (rowCount * process_data.rank) + padding_height*(process_data.rank==0?1:0);
-        
-
-        // // Allocating memory
-        // if (posix_memalign((void**)&feature_map, 64, (long)(total_width) * (long)(totalRowCount) * sizeof(float)) != 0){
-        //     printf("Error allocating memory for feature map.\n");
-        //     MPI_Finalize();
-        //     return 1;
-        // }
 
         f_FloatArray feature_map_padded = {0};
         const int cache_padding_size = 64 - ((inputs.W * sizeof(float)) % 64);
 
         if (posix_memalign((void**)&feature_map_padded.arr, 64, (long)(total_width) * (long)(totalRowCount) * sizeof(float)) != 0){
             printf("Error allocating memory for padded output.\n");
-            MPI_Finalize();
+            MPI_Abort(process_data.comm, EXIT_FAILURE);
             return 1;
         }
         feature_map_padded.padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
@@ -722,14 +726,39 @@ int main(int argc, char** argv) {
         generation_data.end_row     = padding_height + rowCount + ((process_data.rank == process_data.world_size - 1) ? 0 : padding_height);
         generation_data.start_col   = padding_width;
         generation_data.end_col     = total_width - padding_width;
-        
-        
 
         generate_data(total_width, generation_data, &feature_map_padded.arr, featureMapSeed);
 
+        
+
+        // for (int i = 0; i < totalRowCount; i++){
+        //     for (int j = 0; j < total_width; j++) {
+        //         printf("%.3f ", feature_map_padded.arr[IDX(i,j,total_width)]);
+        //     }
+        //     printf("\n");
+        // }
+
         // If wanting to save inputs, write to feature file
         if (inputs.feature_file != NULL){
-            write_data_to_file(inputs.feature_file, feature_map, rowCount, inputs.H, inputs.W, padding_height, padding_width, inputs, process_data, false);
+
+            float* temp_data;
+                if (posix_memalign((void**)&temp_data, 64, (long)(inputs.W) * (long)(rowCount) * sizeof(float)) != 0){
+                printf("Error allocating memory for padded output.\n");
+                MPI_Abort(process_data.comm, EXIT_FAILURE);
+                return 1;
+            }
+
+            for (long i = 0; i < (long)(rowCount); i++){
+                for (long j = 0; j < (long)(inputs.W); j++){
+                    temp_data[IDX(i,j,inputs.W)] = feature_map[IDX(i+padding_height, j+padding_width, total_width)];
+                }
+            }
+
+            write_data_to_file(inputs.feature_file, temp_data, rowCount, inputs.H, inputs.W, padding_height, padding_width, true, inputs, process_data, false);
+
+            // todo remove
+            //printf("Process %d got here\n", process_data.rank);
+            free(temp_data);
         }
 
 
@@ -739,7 +768,7 @@ int main(int argc, char** argv) {
         // Extract dimensions of the feature map
         if (extract_dimensions(inputs.feature_file, &(inputs.H), &(inputs.W)) != 0){ 
             printf("Error extracting feature map dimensions from file.\n");
-            MPI_Finalize();
+            MPI_Abort(process_data.comm, EXIT_FAILURE);
             return 1;
         }
 
@@ -759,7 +788,7 @@ int main(int argc, char** argv) {
         // Allocate memory for the feature map of the feature map.
         if (posix_memalign((void**)&feature_map, 64, (long)(total_width) * (long)(totalRowCount) * sizeof(float)) != 0){
             printf("Error allocating memory for feature map.\n");
-            MPI_Finalize();
+            MPI_Abort(process_data.comm, EXIT_FAILURE);
             return 1;
         }
 
@@ -771,18 +800,18 @@ int main(int argc, char** argv) {
         // Extract Feature Map
         if (extract_data(inputs.feature_file, inputs.W, rowCount, padding_width, padding_height, start_index, &feature_map, process_data) != 0){
             printf("Error extracting feature map data from file.\n");
-            MPI_Finalize();
+            MPI_Abort(process_data.comm, EXIT_FAILURE);
             return 1;
         } 
     }
 
-    
+
     // ~~~~~~~~~~~~~~ 6. Convolutions ~~~~~~~~~~~~~~ //
     
     // Check if we have all the inputs we need to perform convolutions
     if (kernel == NULL || feature_map == NULL){
         printf("To generate an output, please provide all inputs.\n");
-        MPI_Finalize();
+        MPI_Abort(process_data.comm, EXIT_FAILURE);
         return 1;
     }
 
@@ -793,16 +822,13 @@ int main(int argc, char** argv) {
     const int total_strides_width = TOTAL_STRIDES(inputs.W, inputs.sW);
     const int total_strides_height = TOTAL_STRIDES(rowCount, inputs.sH);
 
-    // Used to determine if a process should write to file. This changes to 0 if an error occurs in the convolutions.
-    bool should_write_to_file = true;
-
     // The size of the array padding. Used to prevent false sharing.
     // Equal to the number of bytes left over in the cache line containing the final element in float array.
     const int cache_padding_size = 64 - ((inputs.W * sizeof(float)) % 64);
 
     if (posix_memalign((void**)&padded_outputs.arr, 64, (long)(total_strides_width) * (long)(total_strides_height) * sizeof(float)) != 0){
         printf("Error allocating memory for padded output.\n");
-        MPI_Finalize();
+        MPI_Abort(process_data.comm, EXIT_FAILURE);
         return 1;
     }
     padded_outputs.padding = cache_padding_size == 64 ? NULL : (char*)malloc(cache_padding_size);
@@ -810,11 +836,12 @@ int main(int argc, char** argv) {
 
     MPI_Barrier(process_data.comm);
 
+
     // Timing begins here because convolutions start here.
     const double start_time = omp_get_wtime();
 
     // Perform convolutions
-    should_write_to_file = conv2d_stride(feature_map, rowCount, inputs.W, kernel, inputs, padding_width, padding_height, start_index, padded_outputs);
+    bool wrote_anything = conv2d_stride(feature_map, rowCount, inputs.W, kernel, inputs, padding_width, padding_height, start_index, padded_outputs);
 
 
     // Need to wait for every process to be done before we can write to file (or benchmark).
@@ -827,9 +854,11 @@ int main(int argc, char** argv) {
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 7. Write to Output ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
-    if (inputs.output_file != NULL and should_write_to_file){
-        write_data_to_file(inputs.output_file, padded_outputs.arr, total_strides_height, inputs.H, inputs.W, 0, 0, inputs, process_data, false);
+    if (inputs.output_file != NULL){
+        write_data_to_file(inputs.output_file, padded_outputs.arr, total_strides_height, inputs.H, total_strides_width, 0, 0, wrote_anything, inputs, process_data, false);
     }
+
+
 
     // Free any remaining memory
     if (padded_outputs.arr != NULL) { free(padded_outputs.arr); padded_outputs.arr = NULL; }
